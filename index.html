@@ -3004,28 +3004,39 @@ class Panel {
   // pickable) so the markers always pop against the rainbow trail and the
   // PC, regardless of the object's local appearance. Drawn larger than the
   // largest trail ball so they read as the trajectory's anchors.
-  _addEndpointSpheres(cfg) {
+  _addEndpointSpheres(cfg, fEndExclusive) {
+    // fEndExclusive: the same frame-window upper bound the GT/Pred trail
+    // builders are using on this update tick. We only emit endpoints for
+    // tracks that ACTUALLY render a trail in this window (≥2 valid frames),
+    // so a track filtered out of `_buildTrailLayer` doesn't leave orphaned
+    // start markers floating in the scene.
     const idx = (this.opts.paperMode && cfg._goodIdxPaper) ? cfg._goodIdxPaper
                                                            : (cfg._goodIdx || []);
     if (!idx.length) return;
     const [, rMaxBase] = this._ballRadii();
     const rEnd = rMaxBase * Settings.endpointScale;
-    const cGt = new THREE.Color(Settings.endpointColor);   // GT (and HOT3D obj-cloud) marker color
-    // Pred end-marker color tracks the Pred trail so it stays visually
-    // distinct from the GT yellow even when the two endpoints sit on top of
-    // each other (which is the common case — the model usually predicts
-    // close to GT, and a single yellow sphere obscures the pred anchor).
-    // colormap mode: sample the Pred LUT at t=1; twoColor mode: use the
-    // canonical Pred trail color.
-    const _predCmap = _useColormapFor('pred');
-    const cPred = _predCmap
-      ? new THREE.Color().fromArray(colormapRgb01(1.0, _predCmap.name, _predCmap.reverse))
-      : new THREE.Color(TRAIL_COLORS.pred);
+    const cGt = new THREE.Color(Settings.endpointColor);   // start-point marker color
 
     const records = [];   // each entry = [x, y, z, r, g, b]
     const push = (pt, col) => {
       if (!pt || !Number.isFinite(pt[0])) return;
       records.push([pt[0], -pt[1], -pt[2], col.r, col.g, col.b]);
+    };
+
+    // Helper: does this track have ≥2 visible frames in [0, fEndExclusive)?
+    // Mirrors the filter inside `_buildTrailLayer` so endpoints stay in
+    // sync with the rendered trail set.
+    const trailVisible = (pts3d, p, end) => {
+      if (!pts3d) return false;
+      let n = 0;
+      const lim = Math.min(end ?? pts3d.length, pts3d.length);
+      for (let fi = 0; fi < lim; fi++) {
+        const pt = pts3d[fi]?.[p];
+        if (pt && Number.isFinite(pt[0])) {
+          if (++n >= 2) return true;
+        }
+      }
+      return false;
     };
 
     // HOT3D dense object-cloud path: cfg.gt_3d is a sparse stub (null), real
@@ -3064,17 +3075,27 @@ class Panel {
         push(firstPt, cGt); push(lastPt, cGt);
       }
     } else {
+      // EgoDex / DROID / HD-EPIC / DAVIS: emit ONLY the start marker
+      // (frame 0) per tracked point. End-of-trajectory markers were
+      // confusing because (a) they appear at the FUTURE end position even
+      // mid-playback, and (b) GT-end and Pred-end stack on top of each
+      // other when the model predicts close to GT. Skipping the end
+      // markers altogether matches the cleaner motion5-viz teaser look.
       const T_clip = cfg.gt_3d?.length || 0;
       if (T_clip === 0) return;
+      const winEnd = (fEndExclusive == null || fEndExclusive < 0)
+        ? T_clip
+        : Math.min(fEndExclusive, T_clip);
       for (const p of idx) {
-        // GT start (frame 0) and end (frame T-1) in the GT marker color.
-        if (this.opts.showGT) {
-          push(cfg.gt_3d[0]?.[p],         cGt);
-          push(cfg.gt_3d[T_clip - 1]?.[p], cGt);
-        }
-        // Pred end (frame T-1) in the Pred-tracking color so it remains
-        // visible even when it sits on top of the GT-end marker.
-        if (this.opts.showPred) push(cfg.pred_3d?.[T_clip - 1]?.[p], cPred);
+        if (!this.opts.showGT && !this.opts.showPred) continue;
+        // Track must have an actually-rendered trail in this window —
+        // matches `_buildTrailLayer`'s `raw.length < 6` filter (≥2 valid
+        // frames). Tracks filtered out of the trail no longer leave
+        // their start sphere floating in the scene.
+        const gtVisible   = this.opts.showGT   && trailVisible(cfg.gt_3d,   p, winEnd);
+        const predVisible = this.opts.showPred && trailVisible(cfg.pred_3d, p, winEnd);
+        if (!gtVisible && !predVisible) continue;
+        push(cfg.gt_3d[0]?.[p], cGt);
       }
     }
     if (!records.length) return;
@@ -3383,10 +3404,14 @@ class Panel {
           rMin, rMax, T_TOTAL, null, 'pred');
       }
     }
-    // Global start/end markers in the object's frame-0 sampled RGB. Drawn
-    // last so they sit on top of the trail balls + lines. Always evaluated
-    // (live and paper) — these are *global* anchors, independent of fiFrac.
-    if (this.opts.showEndpoints) this._addEndpointSpheres(cfg);
+    // Start markers (only — we no longer emit end-of-trajectory spheres
+    // for non-HOT3D bundles). Drawn last so they sit on top of the trail
+    // balls + lines. We pass the same `[0, trailEnd)` window the trail
+    // builders just used so endpoints filter to the same track set.
+    if (this.opts.showEndpoints) {
+      const epEnd = isPaper ? T_clip : (lastFi + 1);
+      this._addEndpointSpheres(cfg, epEnd);
+    }
     // Dedicated "initial-position" view: every tracked point at frame 0 in
     // its own object RGB. Independent of trail/endpoint state.
     if (this.opts.showInitialDots) this._addInitialDotsLayer(cfg);
@@ -5393,20 +5418,31 @@ function bindFullVideoControls() {
 // A plain click toggles an item in/out of the selection (no Ctrl/⌘ needed)
 // — the native <select multiple> replace-on-click behaviour is overridden in
 // _enableMultiSelectClickToggle so non-consecutive picks work intuitively.
+// Plain click = single-select (clears the others); Ctrl / Cmd / Shift +
+// click = toggle the clicked option in place (multi-select).
 // The "↺" button restores the auto top-N.
 function _enableMultiSelectClickToggle(sel) {
   if (!sel || sel.dataset.toggleWired === '1') return;
   sel.dataset.toggleWired = '1';
-  // Intercept native mousedown so plain-click no longer wipes the selection
-  // — toggle just the clicked option and re-fire the change event ourselves.
-  // Shift/Ctrl/Meta still toggle (no range-select needed since toggle covers
-  // the workflow). We focus the element so keyboard nav still works after.
+  // Intercept native mousedown so we can override the default behaviour:
+  // plain click should replace the selection (so a user who picks one track
+  // sees ONLY that track), and modifier-click should toggle so that
+  // non-consecutive multi-pick still works. We focus the element so
+  // keyboard nav still works after.
   sel.addEventListener('mousedown', (e) => {
     const opt = e.target.closest('option');
     if (!opt || opt.parentElement !== sel) return;
     e.preventDefault();
     sel.focus();
-    opt.selected = !opt.selected;
+    if (e.ctrlKey || e.metaKey || e.shiftKey) {
+      opt.selected = !opt.selected;
+    } else {
+      // Single-select on plain click. We clear the rest first so the user
+      // gets exactly one track rendered, instead of "the auto-N PLUS the
+      // one I just clicked".
+      for (const o of sel.options) o.selected = false;
+      opt.selected = true;
+    }
     sel.dispatchEvent(new Event('change', { bubbles: true }));
   });
 }
