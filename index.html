@@ -623,6 +623,16 @@ footer a { color: #2563eb; text-decoration: none; }
     <button class="btn" id="preset-save" title="Save the current settings as a named preset">Save</button>
     <button class="btn" id="preset-del" title="Delete the selected preset">Del</button>
   </div>
+  <!-- Save / Load full config (single JSON, full round-trip).
+       Differs from the localStorage presets above: this writes a single
+       file to disk that captures every panel knob, the active clip URL,
+       the camera position, the picker selection, and the click-to-hide
+       PC set, so the entire viewer state can be restored on another
+       machine / browser by loading one JSON. -->
+  <div class="preset-row">
+    <button class="btn" id="config-save" title="Download mt_config_<clip>_<timestamp>.json — every slider/colour/dropdown/toggle, the colormap presets, the camera target / yaw / pitch / dist, the GT and Raw picker selections, and the click-to-hide PC index set.">💾 Save config</button>
+    <button class="btn" id="config-load" title="Load a previously-downloaded mt_config JSON. If the saved clip URL differs from the current page, the page reloads onto that clip first and the rest of the state is applied after the new bundle finishes hydrating.">📂 Load config</button>
+  </div>
 
   <div class="sb-body">
 
@@ -6530,6 +6540,7 @@ function bindControls() {
   bindSidebar();
   bindPalettes();
   bindPresets();
+  bindConfigSaveLoad();
 
   video.playbackRate = parseFloat(document.getElementById('rate-sel').value);
   bindKeyboardCamera();
@@ -7022,6 +7033,213 @@ function bindPresets() {
     _writePresets(all);
     refill();
   });
+}
+
+// ──────────── Single-JSON full-state save / load ─────────────────────
+// Round-trip the entire viewer state to a downloadable JSON. Distinct from
+// the localStorage preset row above: this writes a file you can hand off to
+// another machine / browser and get the same teaser back. Captures:
+//   * clip_url + obj  (so loading restores the bundle, not just the knobs)
+//   * inputs / toggles (PRESET_INPUTS / PRESET_TOGGLES, same set as presets)
+//   * cmap (per-role: GT global preset + Pred preset + reverse flags +
+//                     intensity)
+//   * camera (target xyz, yaw, pitch, dist)
+//   * picker (GT and Raw selected indices — survives the auto-N reset)
+//   * pc_hidden (click-to-hide PC index set, serialised as Array)
+// When the loaded file's clip_url differs from the current page, we stash
+// the rest in sessionStorage and reload the page onto the right ?clip=...;
+// the bootstrap below picks the stash up after init() finishes.
+const CONFIG_FILE_VERSION = 1;
+const PENDING_CONFIG_KEY = 'mt_pending_config_v1';
+
+function _captureFullConfig() {
+  const out = {
+    _v: CONFIG_FILE_VERSION,
+    _generated_at: new Date().toISOString(),
+    clip_url: CLIP_URL,
+    obj: new URLSearchParams(location.search).get('obj') || null,
+    inputs: {},
+    toggles: {},
+    cmap: {
+      preset:       Settings.cmapPreset,
+      reverse:      !!Settings.cmapReverse,
+      intensity:    Settings.cmapIntensity,
+      preset_pred:  Settings.cmapPresetPred,
+      reverse_pred: !!Settings.cmapReversePred,
+    },
+    camera: {
+      yaw:   camState.yaw,
+      pitch: camState.pitch,
+      dist:  camState.dist,
+      target: { x: camState.target.x, y: camState.target.y, z: camState.target.z },
+    },
+    picker: {
+      gt:  (typeof cfg !== 'undefined' && Array.isArray(cfg?._goodIdx))
+              ? [...cfg._goodIdx] : [],
+      raw: (typeof clipData !== 'undefined' && Array.isArray(clipData?._rawIdx))
+              ? [...clipData._rawIdx] : [],
+    },
+    pc_hidden: (typeof clipData !== 'undefined' && clipData?._pcHidden)
+                  ? [...clipData._pcHidden] : [],
+  };
+  for (const id of PRESET_INPUTS) {
+    const el = document.getElementById(id);
+    if (el && 'value' in el) out.inputs[id] = el.value;
+  }
+  for (const id of PRESET_TOGGLES) {
+    const el = document.getElementById(id);
+    if (el) out.toggles[id] = el.classList.contains('on');
+  }
+  return out;
+}
+
+function _applyFullConfig(p) {
+  if (!p || typeof p !== 'object') return;
+  // 1. Clip + obj first. If either differs from the current URL, stash the
+  //    rest of the config and bounce through a page reload — the bundle has
+  //    to re-hydrate before track indices / hidden PC set / camera target
+  //    have anything to attach to.
+  const wantUrl = p.clip_url || CLIP_URL;
+  const wantObj = p.obj || null;
+  const curObj  = new URLSearchParams(location.search).get('obj') || null;
+  if (wantUrl !== CLIP_URL || wantObj !== curObj) {
+    try { sessionStorage.setItem(PENDING_CONFIG_KEY, JSON.stringify(p)); }
+    catch { /* sessionStorage may be disabled — fall through and apply
+               whatever knobs we can; user will see a reload-required
+               warning instead. */ }
+    const url = new URL(location.href);
+    url.searchParams.set('clip', wantUrl);
+    if (wantObj) url.searchParams.set('obj', wantObj);
+    else         url.searchParams.delete('obj');
+    location.href = url.toString();
+    return;
+  }
+  // 2. Sliders / colour pickers / dropdowns — same dispatch path as presets
+  //    so each input's bound handler fires.
+  for (const [id, v] of Object.entries(p.inputs || {})) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.value = v;
+    el.dispatchEvent(new Event('input',  { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  for (const [id, want] of Object.entries(p.toggles || {})) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    if (el.classList.contains('on') !== want) el.click();
+  }
+  // 3. Colormap (both GT-global and Pred override). The intensity slider is
+  //    in PRESET_INPUTS so it's already been applied above; we still mirror
+  //    Settings.cmapIntensity here in case the file came from a build that
+  //    didn't expose the slider.
+  if (p.cmap) {
+    if (typeof p.cmap.preset === 'string')      Settings.cmapPreset      = p.cmap.preset;
+    if (typeof p.cmap.preset_pred === 'string') Settings.cmapPresetPred  = p.cmap.preset_pred;
+    Settings.cmapReverse      = !!p.cmap.reverse;
+    Settings.cmapReversePred  = !!p.cmap.reverse_pred;
+    if (p.cmap.intensity != null) Settings.cmapIntensity = +p.cmap.intensity;
+    document.getElementById('cmap-chip-row')?.querySelectorAll('.cmap-chip').forEach(c => {
+      c.classList.toggle('active', c.dataset.name === Settings.cmapPreset);
+    });
+    document.getElementById('cmap-rev')?.classList.toggle('on', Settings.cmapReverse);
+    document.getElementById('cmap-chip-row-pred')?.querySelectorAll('.cmap-chip').forEach(c => {
+      c.classList.toggle('active', c.dataset.name === Settings.cmapPresetPred);
+    });
+    document.getElementById('cmap-rev-pred')?.classList.toggle('on', Settings.cmapReversePred);
+    if (typeof buildTimeLegend === 'function') buildTimeLegend();
+  }
+  // 4. Camera. Read into camState; the next render() picks it up via
+  //    applyCamera() (driven by rerenderAll/rebuildAllStatic below).
+  if (p.camera) {
+    if (Number.isFinite(+p.camera.yaw))   camState.yaw   = +p.camera.yaw;
+    if (Number.isFinite(+p.camera.pitch)) camState.pitch = +p.camera.pitch;
+    if (Number.isFinite(+p.camera.dist))  camState.dist  = +p.camera.dist;
+    if (p.camera.target) {
+      const t = p.camera.target;
+      camState.target.set(+t.x || 0, +t.y || 0, +t.z || 0);
+    }
+  }
+  // 5. Picker selections. Both `cfg._goodIdx` (live) and `_goodIdxPaper`
+  //    (paper-mode) are written so paper-mode panels match the live ones,
+  //    same as the picker's plain change handler.
+  if (p.picker) {
+    if (Array.isArray(p.picker.gt) && typeof cfg !== 'undefined' && cfg) {
+      cfg._goodIdx      = p.picker.gt.slice();
+      cfg._goodIdxPaper = p.picker.gt.slice();
+      const sel = document.getElementById('gt-pick');
+      if (sel) {
+        const want = new Set(cfg._goodIdx);
+        for (const opt of sel.options) opt.selected = want.has(parseInt(opt.value, 10));
+      }
+      if (typeof syncAltPanelGtFromClip === 'function') syncAltPanelGtFromClip();
+    }
+    if (Array.isArray(p.picker.raw) && typeof clipData !== 'undefined' && clipData) {
+      clipData._rawIdx      = p.picker.raw.slice();
+      clipData._rawIdxPaper = p.picker.raw.slice();
+      const sel = document.getElementById('raw-pick');
+      if (sel) {
+        const want = new Set(clipData._rawIdx);
+        for (const opt of sel.options) opt.selected = want.has(parseInt(opt.value, 10));
+      }
+    }
+  }
+  // 6. Click-to-hide PC set. rebuildAllStatic below re-runs buildStatic on
+  //    every panel, which is what reads `_pcHidden` when assembling the PC.
+  if (Array.isArray(p.pc_hidden) && typeof clipData !== 'undefined' && clipData) {
+    clipData._pcHidden = new Set(p.pc_hidden);
+    const lbl = document.getElementById('pc-hidden-count');
+    if (lbl) lbl.textContent = clipData._pcHidden.size;
+  }
+  // Rebuild static (PC + frustum) so _pcHidden takes effect, then a regular
+  // render so cam + picker + cmap changes paint.
+  if (typeof rebuildAllStatic === 'function') rebuildAllStatic();
+  else if (typeof rerenderAll === 'function') rerenderAll();
+}
+
+function _downloadConfigJSON() {
+  const cfgOut = _captureFullConfig();
+  const stem   = (CLIP_URL.split('/').pop() || 'clip').replace(/\.json$/, '');
+  const ts     = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const blob   = new Blob([JSON.stringify(cfgOut, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `mt_config_${stem}_${ts}.json`;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 0);
+}
+
+function _openConfigFile() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'application/json,.json';
+  input.addEventListener('change', async () => {
+    const f = input.files?.[0];
+    if (!f) return;
+    let obj;
+    try { obj = JSON.parse(await f.text()); }
+    catch (err) { alert('Could not parse config JSON: ' + err.message); return; }
+    _applyFullConfig(obj);
+  });
+  input.click();
+}
+
+function bindConfigSaveLoad() {
+  document.getElementById('config-save')?.addEventListener('click', _downloadConfigJSON);
+  document.getElementById('config-load')?.addEventListener('click', _openConfigFile);
+  // Apply any config that was stashed by a clip-changing _applyFullConfig
+  // call before this page navigated. We wait one frame after this binding
+  // runs so init() has finished hydrating cfg + clipData (the binding sits
+  // inside bindControls which runs from init right after panel build).
+  let pending = null;
+  try { pending = sessionStorage.getItem(PENDING_CONFIG_KEY); } catch {}
+  if (pending) {
+    try { sessionStorage.removeItem(PENDING_CONFIG_KEY); } catch {}
+    requestAnimationFrame(() => {
+      try { _applyFullConfig(JSON.parse(pending)); }
+      catch (err) { console.error('Failed to replay pending config:', err); }
+    });
+  }
 }
 
 // ──────────── WASD pan + E/C up/down camera controls ────────────
