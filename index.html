@@ -767,15 +767,15 @@ footer a { color: #2563eb; text-decoration: none; }
       </div>
     </details>
 
-    <!-- 2D video overlay tuning. Width / dot-radius / alpha / dash
-         knobs that only affect drawVideoOverlay (the canvas painted on
-         top of panel ①'s mp4). Colours come from the global col-gt /
-         col-pred pickers up in Layers, so changing those still updates
-         the 2D overlay in lock-step with the 3D panels. -->
+    <!-- 2D overlay tuning. Width / dot-radius / alpha / dash knobs that
+         drive both drawVideoOverlay (panel ①) and drawChronoOverlay
+         (panel ②). Colours come from the global col-gt / col-pred
+         pickers up in Layers so changing those still updates the 2D
+         overlays in lock-step with the 3D panels. -->
     <details class="sb-section">
       <summary>
-        <svg class="chev" viewBox="0 0 16 16" fill="currentColor"><path d="M5 3l6 5-6 5V3z"/></svg> 2D video overlay
-        <span class="summary-tag">width · dots · alpha (panel ① only)</span>
+        <svg class="chev" viewBox="0 0 16 16" fill="currentColor"><path d="M5 3l6 5-6 5V3z"/></svg> 2D overlays
+        <span class="summary-tag">width · dots · alpha (panels ① + ②)</span>
       </summary>
       <div class="sb-body-inner">
         <div class="fld-grid">
@@ -5929,20 +5929,29 @@ function drawChronoOverlay() {
   // Chrono GT/Pred trails span the whole clip; tStart/tEnd reflect that.
   const T_clip2 = Math.max(cfg.gt_2d?.length || 0, cfg.pred_2d?.length || 0, 1);
   const Tdenom2 = Math.max(1, T_clip2 - 1);
+  // Chrono uses the same Settings.video2D knobs as drawVideoOverlay so the
+  // sidebar's "2D video overlay" sliders drive both panels. Width / dot
+  // radius / alpha / dash → identical for both. The chrono trail spans the
+  // entire clip (vs. the video's growing-up-to-playhead window) so a
+  // single still image still communicates the full motion.
+  const v2d = Settings.video2D || {};
   if (cfg.gt_2d && Settings.show2DGt) {
     const fE = cfg.gt_2d.length - 1;
     const tE = fE / Tdenom2;
     for (const p of idx) {
       const pts = collectPath(cfg.gt_2d, p, 0, fE, W, H);
-      strokeGradientPath(ctx, pts, TRAIL_RGB.gt, 1.3, null, 'gt', 0, tE);
+      strokeGradientPath(ctx, pts, TRAIL_RGB.gt, v2d.gtWidth ?? 1.5, null,
+                         'gt', 0, tE, v2d.gtAlpha ?? 1.0);
     }
   }
   if (cfg.pred_2d) {
     const fE = cfg.pred_2d.length - 1;
     const tE = fE / Tdenom2;
+    const dash = (v2d.predDashOn === false) ? null : [4, 3];
     for (const p of idx) {
       const pts = collectPath(cfg.pred_2d, p, 0, fE, W, H);
-      strokeGradientPath(ctx, pts, TRAIL_RGB.pred, 1.3, [4, 3], 'pred', 0, tE);
+      strokeGradientPath(ctx, pts, TRAIL_RGB.pred, v2d.predWidth ?? 1.5, dash,
+                         'pred', 0, tE, v2d.predAlpha ?? 1.0);
     }
   }
   // Endpoint markers — drawn last so they sit on top of the trails. Under
@@ -5955,21 +5964,26 @@ function drawChronoOverlay() {
     const ptColor = pickHex(ptColors[p]);
     if (cfg.gt_2d && Settings.show2DGt) {
       const s = cfg.gt_2d[0]?.[p];
-      if (s && Number.isFinite(s[0]) && s[0]>=0 && s[0]<=1) softDot(ctx, s[0]*W, s[1]*H, ptColor, 3.4);
+      if (s && Number.isFinite(s[0]) && s[0]>=0 && s[0]<=1)
+        softDot(ctx, s[0]*W, s[1]*H, ptColor, v2d.gtDotR ?? 4.2);
     }
     if (cfg.gt_2d && Settings.show2DGt) {
       const e = cfg.gt_2d[cfg.gt_2d.length-1]?.[p];
       if (e && Number.isFinite(e[0]) && e[0]>=0 && e[0]<=1) {
         const x = e[0]*W, y = e[1]*H;
-        softDot(ctx, x, y, ptColor, 3.4);
-        ctx.strokeStyle = rgbaFrom(gtEndRgb, 0.95); ctx.lineWidth = 1.0;
-        ctx.beginPath(); ctx.arc(x, y, 5.2, 0, Math.PI*2); ctx.stroke();
+        softDot(ctx, x, y, ptColor, v2d.gtDotR ?? 4.2);
+        ctx.strokeStyle = rgbaFrom(gtEndRgb, v2d.gtAlpha ?? 0.95);
+        ctx.lineWidth = v2d.predDotW ?? 1.0;
+        ctx.beginPath(); ctx.arc(x, y, (v2d.predDotR ?? 5.0) + 0.2, 0, Math.PI*2); ctx.stroke();
       }
     }
     if (cfg.pred_2d) {
       const e = cfg.pred_2d[cfg.pred_2d.length-1]?.[p];
       if (e && Number.isFinite(e[0]) && e[0]>=0 && e[0]<=1) {
-        ringDot(ctx, e[0]*W, e[1]*H, rgbaFrom(predEndRgb, 0.95), 5.2);
+        ringDot(ctx, e[0]*W, e[1]*H,
+                rgbaFrom(predEndRgb, v2d.predAlpha ?? 0.95),
+                v2d.predDotR ?? 5.0,
+                v2d.predDotW ?? 1.6);
       }
     }
   }
