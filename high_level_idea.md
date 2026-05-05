@@ -71,8 +71,16 @@ Manual override: the `<select multiple>` pickers (`gt-pick`, `raw-pick`).
   (~45k pts), full_video + full PC available.
 - **HD-EPIC** (P05/P06) — multi-object configs (`obj_name` selector
   visible), pour/scrub tasks.
-- **DROID** (AUTOLab, GuptaLab, PennPAL) — wider clip range, JSON-fallback
-  PC (no .bin).
+- **DROID** (AUTOLab, GuptaLab, PennPAL, REAL, CLVR) — 16 curated clips
+  (mirrors the `droid-rgb-viz` selection). 8 with `_object_tNN` baked from
+  motion5-viz `modeling_json/droid/test/` (rollout5; ~70–88 tracks ×
+  21–33 frames). 6 raw stems (5×0d4edc83 + 5d05c5aa_2023-07-07) baked from
+  motion3-viz `2mix_droid_molmospaces_p8_h3_f8` (8 tracks × 11 frames —
+  sparser, since this checkpoint is p8/f8). 2 substituted bases use
+  motion5-viz `_object_t20` / `_object_t24`. All have
+  `pred_2d/3d[0..n_hist]==gt_2d/3d[0..n_hist]` so the prediction trail
+  visually starts with the 3 GT history frames before diverging — no
+  separate "history" track is rendered.
 - **DAVIS** (camel) — single object benchmark.
 - **HOT3D** (clip1995→1996) — cross-clip stitched scene with **dense gt3d
   binaries** (`hot3d_*_gt3d_a/b.bin`, ~thousands of tracks per object) +

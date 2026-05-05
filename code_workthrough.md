@@ -22,6 +22,9 @@ motion-teaser-viz/
 │  ├─ build_scene_moge_lastframe.py
 │  ├─ build_scene_monst3r.py
 │  ├─ rebuild_pc_droid_dense.py
+│  ├─ bake_droid16.py            # bake 16 curated DROID clips
+│  │                             #   (motion5-viz rollout5 +
+│  │                             #    motion3-viz 2mix_droid_molmospaces_p8_h3_f8)
 │  ├─ regen_hot3d_dense_scene_pc.py
 │  ├─ regen_hot3d_dense_tracks.py
 │  ├─ extract_hires_frames.py  # paper-quality strip frames (EgoDex+HOT3D)
