@@ -5516,7 +5516,16 @@ function _enableMultiSelectClickToggle(sel) {
     const opt = e.target.closest('option');
     if (!opt || opt.parentElement !== sel) return;
     e.preventDefault();
-    sel.focus();
+    // Preserve the listbox's scroll position across focus + change.
+    // Chrome scrolls a focused multi-select to its first option (and can
+    // scroll the page to bring the picker into view) the moment focus
+    // arrives without a `selectedIndex`-based active option, which made
+    // every click in a long picker (173 GT options for DROID) feel like
+    // the list "jumped to the start". `preventScroll:true` blocks the
+    // outer page scroll; saving and restoring `sel.scrollTop` blocks the
+    // intra-listbox jump.
+    const savedScroll = sel.scrollTop;
+    sel.focus({ preventScroll: true });
     if (e.ctrlKey || e.metaKey || e.shiftKey) {
       opt.selected = !opt.selected;
     } else {
@@ -5527,12 +5536,17 @@ function _enableMultiSelectClickToggle(sel) {
       opt.selected = true;
     }
     sel.dispatchEvent(new Event('change', { bubbles: true }));
+    sel.scrollTop = savedScroll;
   });
 }
 function fillTrajectoryPicker(selectId, scores, selectedSet,
                               orderJumpiest = false) {
   const sel = document.getElementById(selectId);
   if (!sel) return;
+  // Save scroll position; rebuilding the children with innerHTML='' resets
+  // it. Restore it after the new options are in place so e.g. the n-keep
+  // slider doesn't bounce a long picker back to the top on every tick.
+  const savedScroll = sel.scrollTop;
   sel.innerHTML = '';
   const valid = [];
   for (let i = 0; i < scores.length; i++) if (scores[i] > 0) valid.push(i);
@@ -5547,6 +5561,7 @@ function fillTrajectoryPicker(selectId, scores, selectedSet,
     frag.appendChild(o);
   }
   sel.appendChild(frag);
+  sel.scrollTop = savedScroll;
 }
 
 function readPickerSelection(selectId) {
