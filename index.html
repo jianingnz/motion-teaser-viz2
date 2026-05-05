@@ -5512,32 +5512,57 @@ function _enableMultiSelectClickToggle(sel) {
   // sees ONLY that track), and modifier-click should toggle so that
   // non-consecutive multi-pick still works. We focus the element so
   // keyboard nav still works after.
+  // Pin the listbox's scroll position across click. The naive synchronous
+  // `sel.scrollTop = saved` after dispatchEvent isn't enough — Chrome
+  // re-runs an auto-scroll-to-first-selected-option pass during the next
+  // layout, AFTER our handler returns. We defeat both passes by skipping
+  // sel.focus() entirely (focus was the trigger for one of the two scroll
+  // passes), then re-asserting scrollTop synchronously, on rAF, and via
+  // a 0ms setTimeout — covers every browser quirk we've seen.
+  const _pinScroll = (saved) => {
+    sel.scrollTop = saved;
+    requestAnimationFrame(() => { sel.scrollTop = saved; });
+    setTimeout(() => { sel.scrollTop = saved; }, 0);
+  };
   sel.addEventListener('mousedown', (e) => {
     const opt = e.target.closest('option');
     if (!opt || opt.parentElement !== sel) return;
     e.preventDefault();
-    // Preserve the listbox's scroll position across focus + change.
-    // Chrome scrolls a focused multi-select to its first option (and can
-    // scroll the page to bring the picker into view) the moment focus
-    // arrives without a `selectedIndex`-based active option, which made
-    // every click in a long picker (173 GT options for DROID) feel like
-    // the list "jumped to the start". `preventScroll:true` blocks the
-    // outer page scroll; saving and restoring `sel.scrollTop` blocks the
-    // intra-listbox jump.
     const savedScroll = sel.scrollTop;
-    sel.focus({ preventScroll: true });
     if (e.ctrlKey || e.metaKey || e.shiftKey) {
       opt.selected = !opt.selected;
     } else {
-      // Single-select on plain click. We clear the rest first so the user
-      // gets exactly one track rendered, instead of "the auto-N PLUS the
-      // one I just clicked".
+      // Single-select on plain click. Clear everything else so the user
+      // gets exactly one track rendered (not "auto-N PLUS the click").
       for (const o of sel.options) o.selected = false;
       opt.selected = true;
     }
     sel.dispatchEvent(new Event('change', { bubbles: true }));
-    sel.scrollTop = savedScroll;
+    _pinScroll(savedScroll);
   });
+  // Belt-and-suspenders: if anything else (e.g. the browser auto-scroll
+  // after a `change` is dispatched, or a focus event from keyboard nav)
+  // jumps the listbox, snap it back. Tracked-by-attribute so adding the
+  // listener twice on a re-bound element is a no-op.
+  if (!sel.dataset.scrollPinWired) {
+    sel.dataset.scrollPinWired = '1';
+    let lastUserScroll = sel.scrollTop;
+    sel.addEventListener('scroll', () => {
+      // The user scrolled with the wheel/keyboard — record the new
+      // position as the canonical one. We only consider this a
+      // "user scroll" when the value differs from the synthetic snap-back
+      // values we set ourselves (we set them to `lastUserScroll`).
+      if (sel.scrollTop !== lastUserScroll && !sel._suppressScrollSync) {
+        lastUserScroll = sel.scrollTop;
+      }
+    });
+    sel.addEventListener('focus', (e) => {
+      // Browser focus → first-option snap. Restore.
+      sel._suppressScrollSync = true;
+      _pinScroll(lastUserScroll);
+      requestAnimationFrame(() => { sel._suppressScrollSync = false; });
+    });
+  }
 }
 function fillTrajectoryPicker(selectId, scores, selectedSet,
                               orderJumpiest = false) {
