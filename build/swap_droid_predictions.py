@@ -38,9 +38,12 @@ import numpy as np
 
 M5_JSON = Path('/weka/prior-default/jianingz/home/visual/motion5-viz/static/data/modeling_json/droid/test')
 M3_JSON = Path('/weka/prior-default/chenhaoz/home/MotionPlanner/motion3-viz/static/data/modeling_json/droid/droid_v1_ft_f16')
-M3_VID  = Path('/weka/prior-default/chenhaoz/home/MotionPlanner/motion3-viz/static/videos/modeling/droid')
 EV_BYCLASS = Path('/weka/prior-default/chenhaoz/home/MotionPlanner/molmo2/eval_results')
 SERVED = Path('/weka/prior-default/jianingz/home/visual/motion-teaser-viz2')
+
+# Raw DROID 1.0.1 release — 1280×720 @ 60 fps. We always source the served mp4
+# from here so panel ① stays at 720p (motion5-viz pre-downsampled to 640×360).
+DROID_RAW_ROOT = Path('/weka/oe-training-default/jianingz/dataset/droid/1.0.1')
 
 # (stem, t0)  → swap pred from rollout5_droid_test_byclass_*
 ROLLOUT5_CLIPS = [
@@ -76,6 +79,32 @@ ALL_CLIP_IDS = (
     [f'{s}_object_t{t}' for s, t in ROLLOUT5_CLIPS]
     + TRAJ3D_CLIPS
 )
+
+
+def find_raw_mp4(stem: str) -> Path:
+    """Resolve a clip stem (`{lab}_{hex}_{timestamp}_{cam}`) to its raw
+    DROID 1.0.1 mp4 by:
+      1. Splitting the stem to recover (lab, hex, timestamp, cam).
+      2. Globbing /1.0.1/<lab>/{success,failure}/<date>/<run>/metadata_<UUID>.json
+         where date = first 10 chars of timestamp, UUID = lab+hex+timestamp.
+      3. Returning <run>/recordings/MP4/<cam>.mp4 from the matched run dir.
+    The metadata-based lookup keeps us robust against the DROID dataset's
+    timestamp-formatted run-dir names (e.g. `Sat_Dec__9_15:45:51_2023`)
+    which do not collide with our `2023-12-09-15h-45m-51s` form."""
+    parts = stem.split('_')
+    if len(parts) < 4:
+        raise RuntimeError(f'cannot parse droid stem: {stem}')
+    lab, hexid, ts, cam = parts[0], parts[1], parts[2], parts[3]
+    date = ts[:10]   # YYYY-MM-DD
+    uuid = f'{lab}+{hexid}+{ts}'
+    for split in ('success', 'failure'):
+        for meta in (DROID_RAW_ROOT / lab / split / date).glob(f'*/metadata_{uuid}.json'):
+            run_dir = meta.parent
+            mp4 = run_dir / 'recordings' / 'MP4' / f'{cam}.mp4'
+            if mp4.exists():
+                return mp4
+    raise RuntimeError(f'no raw mp4 found for {stem} '
+                       f'(searched {DROID_RAW_ROOT}/{lab}/<succ|fail>/{date}/*/metadata_{uuid}.json)')
 
 
 def stem_to_video(stem: str) -> str:
@@ -208,21 +237,37 @@ def remove_old_clip_files(clip_id: str):
     print(f'  removed {deleted} files for stale clip-id {clip_id}')
 
 
-def rebake_traj3d_v1(stem: str):
-    src_json = M3_JSON / f'{stem}.json'
-    src_mp4  = M3_VID  / f'{stem}.mp4'
+def _run_prepare_clip(src_json: Path, clip_id: str, stem: str):
+    """Invoke prepare_clip_simple.py with src_mp4 pinned to the raw DROID
+    1.0.1 720p mp4 (so the served panel-① mp4 isn't downsampled)."""
     if not src_json.exists():
-        raise RuntimeError(f'missing droid_v1_ft_f16 src: {src_json}')
-    if not src_mp4.exists():
-        raise RuntimeError(f'missing src mp4: {src_mp4}')
+        raise RuntimeError(f'missing src json: {src_json}')
+    src_mp4 = find_raw_mp4(stem)
     cmd = [sys.executable, str(SERVED / 'build/prepare_clip_simple.py'),
            '--src-json', str(src_json),
            '--src-mp4',  str(src_mp4),
            '--out-dir',  str(SERVED),
-           '--clip-id',  stem]
+           '--clip-id',  clip_id]
     rc = subprocess.run(cmd).returncode
     if rc != 0:
-        raise RuntimeError(f'prepare_clip_simple failed for {stem} rc={rc}')
+        raise RuntimeError(f'prepare_clip_simple failed for {clip_id} rc={rc}')
+
+
+def rebake_traj3d_v1(stem: str):
+    """Pull a clean bundle from motion3-viz/.../droid_v1_ft_f16/<stem>.json
+    (which already has gt/pred for the f16 model) and write it to the
+    served dir at 720p."""
+    _run_prepare_clip(M3_JSON / f'{stem}.json', stem, stem)
+
+
+def rebake_rollout5_at_720p(stem: str, t0: int):
+    """For the rollout5 group we keep the motion5-viz bundle's gt + history
+    indexing but re-bake the served mp4/chrono/pc.bin from the 720p raw
+    DROID mp4. After this, swap_rollout5() overwrites pred_3d/pred_2d in
+    the served JSON with the byclass eval predictions."""
+    clip_id = f'{stem}_object_t{t0}'
+    src_json = M5_JSON / f'{clip_id}.json'
+    _run_prepare_clip(src_json, clip_id, stem)
 
 
 def stamp_viewer_defaults(clip_ids):
@@ -252,7 +297,16 @@ def main():
     args = ap.parse_args()
 
     if not args.skip_rollout5:
-        print('\n=== rollout5 in-place pred swap (8 clips) ===')
+        # Two-pass: first re-bake the rollout5 bundles from the raw 720p
+        # mp4 (motion5-viz's pre-baked mp4 was 640×360), then overwrite
+        # pred_3d/pred_2d with the byclass eval. Step 1 resets pred to
+        # whatever motion5-viz had stored; step 2 stamps the correct
+        # byclass pred on top.
+        print('\n=== rollout5 step 1/2: re-bake 8 clips at 720p ===')
+        for stem, t0 in ROLLOUT5_CLIPS:
+            print(f'[{stem}_object_t{t0}]')
+            rebake_rollout5_at_720p(stem, t0)
+        print('\n=== rollout5 step 2/2: swap pred from byclass eval ===')
         for stem, t0 in ROLLOUT5_CLIPS:
             print(f'[{stem}_object_t{t0}]')
             swap_rollout5(stem, t0)

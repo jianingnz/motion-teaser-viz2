@@ -30,6 +30,28 @@ M3_JSON_DIR = M3 / "static/data/modeling_json/droid/droid_v1_ft_f16"
 M5_VID_DIR  = M5 / "static/videos/modeling/droid"
 M3_VID_DIR  = M3 / "static/videos/modeling/droid"
 
+# Raw DROID 1.0.1 (720p) — the canonical source. We resolve a clip stem
+# (`{lab}_{hex}_{timestamp}_{cam}`) to its run dir via the metadata file, so
+# we don't depend on the downsampled motion5-viz / motion3-viz mp4 mirrors.
+DROID_RAW_ROOT = Path("/weka/oe-training-default/jianingz/dataset/droid/1.0.1")
+
+
+def find_raw_mp4(stem: str) -> Path:
+    parts = stem.split("_")
+    if len(parts) < 4:
+        raise RuntimeError(f"cannot parse droid stem: {stem}")
+    lab, hexid, ts, cam = parts[0], parts[1], parts[2], parts[3]
+    date = ts[:10]
+    uuid = f"{lab}+{hexid}+{ts}"
+    for split in ("success", "failure"):
+        for meta in (DROID_RAW_ROOT / lab / split / date).glob(f"*/metadata_{uuid}.json"):
+            mp4 = meta.parent / "recordings" / "MP4" / f"{cam}.mp4"
+            if mp4.exists():
+                return mp4
+    raise RuntimeError(
+        f"no raw mp4 for {stem} (searched {DROID_RAW_ROOT}/{lab}/<split>/{date}/*)"
+    )
+
 # (clip_id, src_json_dir, src_vid_dir, base_stem, suffix)
 # where src_json = src_json_dir/<base_stem><suffix>.json
 # and   src_mp4  = src_vid_dir /<base_stem>.mp4
@@ -78,13 +100,16 @@ def main():
         if args.only and not clip_id.startswith(args.only):
             continue
         src_json = jdir / f"{clip_id}.json"
-        src_mp4  = vdir / f"{base}.mp4"
         if not src_json.exists():
             print(f"!!! MISSING json: {src_json}", flush=True)
             failures.append((clip_id, "json"))
             continue
-        if not src_mp4.exists():
-            print(f"!!! MISSING mp4:  {src_mp4}", flush=True)
+        # Always source the mp4 from the raw 720p DROID release. The vdir
+        # parameter is no longer used — kept in CLIPS for documentation.
+        try:
+            src_mp4 = find_raw_mp4(base)
+        except RuntimeError as e:
+            print(f"!!! {e}", flush=True)
             failures.append((clip_id, "mp4"))
             continue
         cmd = [sys.executable, str(prepare),

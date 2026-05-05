@@ -767,6 +767,53 @@ footer a { color: #2563eb; text-decoration: none; }
       </div>
     </details>
 
+    <!-- 2D video overlay tuning. Width / dot-radius / alpha / dash
+         knobs that only affect drawVideoOverlay (the canvas painted on
+         top of panel ①'s mp4). Colours come from the global col-gt /
+         col-pred pickers up in Layers, so changing those still updates
+         the 2D overlay in lock-step with the 3D panels. -->
+    <details class="sb-section">
+      <summary>
+        <svg class="chev" viewBox="0 0 16 16" fill="currentColor"><path d="M5 3l6 5-6 5V3z"/></svg> 2D video overlay
+        <span class="summary-tag">width · dots · alpha (panel ① only)</span>
+      </summary>
+      <div class="sb-body-inner">
+        <div class="fld-grid">
+          <div class="fld">
+            <div class="lbl-row"><span title="Line width of the GT 2D trail in panel ①.">GT line w</span><span class="v" id="v2d-gt-w-lbl">1.5</span></div>
+            <input type="range" id="v2d-gt-w" min="0.5" max="6" step="0.1" value="1.5">
+          </div>
+          <div class="fld">
+            <div class="lbl-row"><span title="Radius of the GT current-frame dot drawn over the video.">GT dot r</span><span class="v" id="v2d-gt-r-lbl">4.2</span></div>
+            <input type="range" id="v2d-gt-r" min="1" max="14" step="0.1" value="4.2">
+          </div>
+          <div class="fld">
+            <div class="lbl-row"><span title="Global alpha multiplier on the GT trail's pale → vivid ramp. 1.0 = canonical 0.55→0.95.">GT α</span><span class="v" id="v2d-gt-a-lbl">1.00</span></div>
+            <input type="range" id="v2d-gt-a" min="0" max="1" step="0.02" value="1.0">
+          </div>
+          <div class="fld">
+            <div class="lbl-row"><span title="Line width of the Pred 2D trail in panel ①.">Pred line w</span><span class="v" id="v2d-pr-w-lbl">1.5</span></div>
+            <input type="range" id="v2d-pr-w" min="0.5" max="6" step="0.1" value="1.5">
+          </div>
+          <div class="fld">
+            <div class="lbl-row"><span title="Radius of the Pred current-frame ring drawn over the video.">Pred dot r</span><span class="v" id="v2d-pr-r-lbl">5.0</span></div>
+            <input type="range" id="v2d-pr-r" min="1" max="14" step="0.1" value="5.0">
+          </div>
+          <div class="fld">
+            <div class="lbl-row"><span title="Stroke width of the Pred current-frame ring.">Pred ring w</span><span class="v" id="v2d-pr-rw-lbl">1.6</span></div>
+            <input type="range" id="v2d-pr-rw" min="0.5" max="5" step="0.1" value="1.6">
+          </div>
+          <div class="fld">
+            <div class="lbl-row"><span title="Global alpha multiplier on the Pred trail's pale → vivid ramp. 1.0 = canonical 0.55→0.95.">Pred α</span><span class="v" id="v2d-pr-a-lbl">1.00</span></div>
+            <input type="range" id="v2d-pr-a" min="0" max="1" step="0.02" value="1.0">
+          </div>
+        </div>
+        <div style="margin-top:10px;display:flex;align-items:center;gap:8px;">
+          <button class="btn on" id="v2d-pr-dash" title="Toggle the dashed Pred trail (default ON, matches the 3D Pred dash).">Pred dashed</button>
+        </div>
+      </div>
+    </details>
+
     <!-- ④ Trajectory style ──────────────────────────────────────────── -->
     <!-- Visual rendering of the chosen trajectories: shape (balls / lines)
          and the live trail window. Track *selection* (which IDs to draw,
@@ -1401,6 +1448,23 @@ const Settings = {
   // `viewer_defaults.show2DGt = false`. Default ON so existing bundles
   // retain their look.
   show2DGt:      true,
+  // Per-role knobs for the 2D video overlay (panel ①). Colours come from
+  // the global `col-gt` / `col-pred` pickers via `TRAIL_RGB` so they stay
+  // in sync with the 3D trails. Widths / dot radii / alphas are
+  // overlay-only. The chrono overlay is NOT covered by these — it uses its
+  // own 1.3-px / 3.4-px hardcoded geometry; tighten that with another set
+  // if you also want chrono to be live-tunable.
+  video2D: {
+    gtWidth:    1.5,    // px — GT trail line width
+    gtDotR:     4.2,    // px — radius of the soft current-frame GT dot
+    gtAlpha:    1.0,    // global alpha multiplier on the GT trail (the
+                        // per-segment 0.55→0.95 ramp is scaled by this)
+    predWidth:  1.5,    // px — Pred trail line width
+    predDashOn: true,   // dashed Pred trail? When false, solid
+    predDotR:   5.0,    // px — radius of the Pred current-frame ring
+    predDotW:   1.6,    // px — Pred ring stroke width
+    predAlpha:  1.0,    // global alpha multiplier on the Pred trail
+  },
   // Per-role override for the Pred trail palette. When set to anything
   // other than null / undefined, _useColormapFor('pred') uses these instead
   // of the global cmapPreset / cmapReverse, letting the GT and Pred trails
@@ -5597,7 +5661,7 @@ function rgbaFrom(rgb, alpha = 0.95) {
 // gradient to align with the 3D one. Defaults to 0..1 (treat the polyline as
 // the full clip).
 function strokeGradientPath(ctx, pts, baseRgb, lineWidth, dash=null,
-                            role=null, tStart=0, tEnd=1) {
+                            role=null, tStart=0, tEnd=1, alphaMul=1.0) {
   if (pts.length < 2) return;
   const smooth = smoothPath2D(pts);
   const m = smooth.length;
@@ -5608,7 +5672,13 @@ function strokeGradientPath(ctx, pts, baseRgb, lineWidth, dash=null,
   ctx.lineJoin = 'round';
   const cmap = _useColormapFor(role);
   const MIX_LO = 0.18, MIX_HI = 1.00;
-  const A_LO = 0.55, A_HI = 0.95;
+  // Per-segment alpha ramps from 0.55 → 0.95 over the visible path. Scale
+  // by `alphaMul` (clamped to [0,1]) so callers can dim or hide the trail
+  // without rebuilding the gradient maths. alphaMul defaults to 1.0 → old
+  // behaviour.
+  const A_LO_BASE = 0.55, A_HI_BASE = 0.95;
+  const aMul = Math.max(0, Math.min(1, alphaMul));
+  const A_LO = A_LO_BASE * aMul, A_HI = A_HI_BASE * aMul;
   for (let i = 0; i < m - 1; i++) {
     const u = (i + 0.5) / Math.max(1, m - 1);  // 0..1 along visible path
     const tg = tStart + u * (tEnd - tStart);    // global gradient fraction
@@ -5651,8 +5721,8 @@ function softDot(ctx, x, y, color, r) {
   ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.fill();
 }
 
-function ringDot(ctx, x, y, color, r) {
-  ctx.strokeStyle = color; ctx.lineWidth = 1.6; ctx.setLineDash([]);
+function ringDot(ctx, x, y, color, r, lineWidth=1.6) {
+  ctx.strokeStyle = color; ctx.lineWidth = lineWidth; ctx.setLineDash([]);
   ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.stroke();
 }
 
@@ -5752,18 +5822,25 @@ function drawVideoOverlay(fiFrac) {
   // rainbow mode is on.
   const T_clip = (cfg.gt_3d?.length || cfg.pred_3d?.length || 1);
   const Tdenom = Math.max(1, T_clip - 1);
+  // 2D-overlay-only knobs. Width / dash / alpha come from Settings.video2D
+  // so they don't affect the 3D panel trails — those have their own width
+  // (`line-scale`) + dash hard-coded as part of the LineMaterial preset.
+  const v2d = Settings.video2D || {};
   if (cfg.gt_2d && lastFi >= 0 && Settings.show2DGt) {
     const tS = 0, tE = lastFi / Tdenom;
     for (const p of idx) {
       const pts = collectPath(cfg.gt_2d, p, 0, lastFi, W, H);
-      strokeGradientPath(ctx, pts, TRAIL_RGB.gt, 1.5, null, 'gt', tS, tE);
+      strokeGradientPath(ctx, pts, TRAIL_RGB.gt, v2d.gtWidth ?? 1.5, null,
+                         'gt', tS, tE, v2d.gtAlpha ?? 1.0);
     }
   }
   if (cfg.pred_2d && lastFi >= 0) {
     const tS = 0, tE = lastFi / Tdenom;
+    const dash = (v2d.predDashOn === false) ? null : [4, 3];
     for (const p of idx) {
       const pts = collectPath(cfg.pred_2d, p, 0, lastFi, W, H);
-      strokeGradientPath(ctx, pts, TRAIL_RGB.pred, 1.5, [4, 3], 'pred', tS, tE);
+      strokeGradientPath(ctx, pts, TRAIL_RGB.pred, v2d.predWidth ?? 1.5, dash,
+                         'pred', tS, tE, v2d.predAlpha ?? 1.0);
     }
   }
 
@@ -5779,13 +5856,14 @@ function drawVideoOverlay(fiFrac) {
     if (cfg.gt_2d && Settings.show2DGt) {
       const pt = interp2d(cfg.gt_2d, fiFrac, p);
       if (pt && pt[0] >= 0 && pt[0] <= 1 && pt[1] >= 0 && pt[1] <= 1) {
-        softDot(ctx, pt[0]*W, pt[1]*H, ptColor, 4.2);
+        softDot(ctx, pt[0]*W, pt[1]*H, ptColor, v2d.gtDotR ?? 4.2);
       }
     }
     if (cfg.pred_2d && fiFrac >= 0) {
       const pt = interp2d(cfg.pred_2d, fiFrac, p);
       if (pt && pt[0] >= 0 && pt[0] <= 1 && pt[1] >= 0 && pt[1] <= 1) {
-        ringDot(ctx, pt[0]*W, pt[1]*H, rgbaFrom(predRgb, 0.95), 5.0);
+        ringDot(ctx, pt[0]*W, pt[1]*H, rgbaFrom(predRgb, v2d.predAlpha ?? 0.95),
+                v2d.predDotR ?? 5.0, v2d.predDotW ?? 1.6);
       }
     }
   }
@@ -6116,6 +6194,31 @@ function bindControls() {
              v => { Settings.ballScale = v;    rerenderAll(); });
   wireSlider('endpoint-scale', 'endpoint-scale-lbl', v => `${v.toFixed(2)}×`,
              v => { Settings.endpointScale = v; rerenderAll(); });
+  // 2D video overlay (panel ① only). Affects drawVideoOverlay; the chrono
+  // overlay and 3D panels are unaffected — they have their own widths.
+  wireSlider('v2d-gt-w',  'v2d-gt-w-lbl',  v => v.toFixed(1),
+             v => { Settings.video2D.gtWidth = v;   rerenderAll(); });
+  wireSlider('v2d-gt-r',  'v2d-gt-r-lbl',  v => v.toFixed(1),
+             v => { Settings.video2D.gtDotR  = v;   rerenderAll(); });
+  wireSlider('v2d-gt-a',  'v2d-gt-a-lbl',  v => v.toFixed(2),
+             v => { Settings.video2D.gtAlpha = v;   rerenderAll(); });
+  wireSlider('v2d-pr-w',  'v2d-pr-w-lbl',  v => v.toFixed(1),
+             v => { Settings.video2D.predWidth = v; rerenderAll(); });
+  wireSlider('v2d-pr-r',  'v2d-pr-r-lbl',  v => v.toFixed(1),
+             v => { Settings.video2D.predDotR  = v; rerenderAll(); });
+  wireSlider('v2d-pr-rw', 'v2d-pr-rw-lbl', v => v.toFixed(1),
+             v => { Settings.video2D.predDotW  = v; rerenderAll(); });
+  wireSlider('v2d-pr-a',  'v2d-pr-a-lbl',  v => v.toFixed(2),
+             v => { Settings.video2D.predAlpha = v; rerenderAll(); });
+  const v2dDashBtn = document.getElementById('v2d-pr-dash');
+  if (v2dDashBtn) {
+    v2dDashBtn.classList.toggle('on', Settings.video2D.predDashOn !== false);
+    v2dDashBtn.onclick = () => {
+      Settings.video2D.predDashOn = !Settings.video2D.predDashOn;
+      v2dDashBtn.classList.toggle('on', !!Settings.video2D.predDashOn);
+      rerenderAll();
+    };
+  }
   // Panel-⑤ object-filter sliders. R + K both rebuild _pcObject (50–100ms);
   // dot scale is just a render setting.
   wireSlider('obj-R',   'obj-R-lbl',   v => v.toFixed(3),
