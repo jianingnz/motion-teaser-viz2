@@ -721,22 +721,30 @@ footer a { color: #2563eb; text-decoration: none; }
       </div>
     </details>
 
-    <!-- ③ Time gradient — global colormap preset ─────────────────── -->
-    <!-- Single chip-based selector: click a chip and ALL gradient sites
-         (GT / Pred / Raw / HOT3D moving-object cloud trails + 2D overlays)
-         use that colormap. 'Default' is the legacy two-colour lerp using
-         the colour pickers in the Layers section. mixLo / tExp are NOT
-         exposed — they're held at sensible defaults internally. -->
+    <!-- ③ Time gradient — per-role colormap presets ────────────────── -->
+    <!-- Two chip rows: the top row drives GT / Raw / HOT3D obj-cloud /
+         endpoints / legend; the second row drives ONLY the Pred trail so the
+         GT and Pred lines can use different perceptual palettes. 'Default'
+         on either row falls back to the legacy two-colour lerp using the
+         colour pickers in the Layers section. mixLo / tExp are NOT exposed
+         — they're held at sensible defaults internally. -->
     <details class="sb-section" open>
       <summary>
         <svg class="chev" viewBox="0 0 16 16" fill="currentColor"><path d="M5 3l6 5-6 5V3z"/></svg> Time-gradient palette
-        <span class="summary-tag">applies to GT · Pred · Raw · HOT3D obj-cloud</span>
+        <span class="summary-tag">GT · Raw · HOT3D obj-cloud (top) · Pred (bottom)</span>
       </summary>
       <div class="sb-body-inner">
+        <div style="font-size:.7rem;color:var(--text-muted);margin-bottom:4px;">GT / Raw / HOT3D obj-cloud / endpoints / legend</div>
         <div id="cmap-chip-row" class="cmap-chips"></div>
-        <div style="margin-top:10px;display:flex;align-items:center;gap:8px;">
-          <button class="btn" id="cmap-rev" title="Reverse the colormap direction (newest ↔ oldest)">⇄ Reverse</button>
+        <div style="margin-top:8px;display:flex;align-items:center;gap:8px;">
+          <button class="btn" id="cmap-rev" title="Reverse the GT colormap direction (newest ↔ oldest)">⇄ Reverse</button>
           <span id="cmap-current-lbl" style="font-family:monospace;font-size:.75rem;color:var(--text-muted);"></span>
+        </div>
+        <div style="font-size:.7rem;color:var(--text-muted);margin:14px 0 4px 0;">Prediction trail</div>
+        <div id="cmap-chip-row-pred" class="cmap-chips"></div>
+        <div style="margin-top:8px;display:flex;align-items:center;gap:8px;">
+          <button class="btn" id="cmap-rev-pred" title="Reverse the Pred colormap direction (newest ↔ oldest)">⇄ Reverse</button>
+          <span id="cmap-current-lbl-pred" style="font-family:monospace;font-size:.75rem;color:var(--text-muted);"></span>
         </div>
         <!-- One global brightness knob applied to every gradient site.
              0   = nearly white / very faint
@@ -1378,6 +1386,14 @@ const Settings = {
   cmapPreset:    'magma',
   cmapReverse:   false,
   cmapIntensity: 1.0,
+  // Per-role override for the Pred trail palette. When set to anything
+  // other than null / undefined, _useColormapFor('pred') uses these instead
+  // of the global cmapPreset / cmapReverse, letting the GT and Pred trails
+  // read as different perceptual palettes (e.g. GT=viridis, Pred=magma).
+  // Default = same as the global so the legacy single-palette behaviour is
+  // preserved until the user clicks a Pred-specific chip.
+  cmapPresetPred:  'viridis',
+  cmapReversePred: false,
 
   // ── Sampling & strategy (live-tunable) ──────────────────────────
   trailLen:       12,    // frames of trail behind the playhead in the live big panel
@@ -2112,9 +2128,17 @@ function colormapRgb255(t, name, reverse) {
 // compatibility with existing call sites; future per-role behaviour can be
 // re-added here without touching the gradient sites.
 function _useColormapFor(role) {
-  const name = Settings.cmapPreset;
+  // Pred has its own palette key so GT and Pred can render different
+  // colormaps simultaneously. All other roles (gt / raw / obj / endpoints /
+  // legend) share the global cmapPreset.
+  const name = (role === 'pred')
+    ? Settings.cmapPresetPred
+    : Settings.cmapPreset;
+  const rev  = (role === 'pred')
+    ? Settings.cmapReversePred
+    : Settings.cmapReverse;
   if (!name || name === 'twoColor' || !COLORMAP_LUTS[name]) return null;
-  return { name, reverse: !!Settings.cmapReverse };
+  return { name, reverse: !!rev };
 }
 
 // ──────────── Catmull-Rom smoothing ────────────
@@ -6216,80 +6240,81 @@ function bindControls() {
     const el = document.getElementById(id);
     if (el) el.oninput = (e) => _setLineScaleUI(parseFloat(e.target.value));
   }
-  // Global colormap-preset chip row. One chip per available colormap (plus
-  // 'Default' = legacy two-colour lerp). Click → Settings.cmapPreset = name,
-  // and EVERY gradient site picks it up via _useColormapFor(). The chip's
-  // coloured bar is a 4-stop sample of the LUT so the chip's identity matches
-  // what the trails will render. Active chip gets an outline.
-  const cmapChipHost = document.getElementById('cmap-chip-row');
-  const cmapNameLbl  = document.getElementById('cmap-current-lbl');
-  const refreshCmapChips = () => {
-    if (!cmapChipHost) return;
-    cmapChipHost.querySelectorAll('.cmap-chip').forEach(c => {
-      c.classList.toggle('active', c.dataset.name === (Settings.cmapPreset || 'twoColor'));
-    });
-    if (cmapNameLbl) {
-      const name = Settings.cmapPreset || 'twoColor';
-      cmapNameLbl.textContent = (name === 'twoColor' ? 'two-colour' : name)
-        + (Settings.cmapReverse ? ' (reversed)' : '');
-    }
-  };
-  if (cmapChipHost) {
-    cmapChipHost.innerHTML = '';
-    // 'twoColor' first so the legacy look is one click away. Then every
-    // colormap from COLORMAP_NAMES (in COLORMAP_LUTS), in declared order.
-    const items = [['twoColor', 'Default']]
-      .concat(Object.keys(COLORMAP_LUTS).map(n => [n, n]));
-    for (const [name, label] of items) {
-      const btn = document.createElement('button');
-      btn.className = 'cmap-chip';
-      btn.dataset.name = name;
-      btn.title = label === 'Default'
-        ? 'Two-colour lerp using the per-role colour pickers (legacy mode)'
-        : `Apply ${label} colormap to every gradient site`;
-      const bar = document.createElement('div');
-      bar.className = 'cc-bar';
-      if (name === 'twoColor') {
-        bar.style.background = 'linear-gradient(to right, #ffffff, #f0529c)';
-      } else {
-        // Sample the LUT at 5 stops so the chip's bar previews the actual
-        // perceptual progression the trails will draw.
-        // Sample the LUT directly (NOT via colormapRgb01) so the chip swatch
-        // always shows the canonical palette — the trail-brightness slider
-        // only affects rendered trails, never the picker itself.
-        const lut = COLORMAP_LUTS[name];
-        const stops = [0, 0.25, 0.5, 0.75, 1].map(t => {
-          const i = Math.round(t * 255) * 3;
-          return `rgb(${lut[i]},${lut[i+1]},${lut[i+2]}) ${(t*100).toFixed(0)}%`;
-        });
-        bar.style.background = `linear-gradient(to right, ${stops.join(', ')})`;
+  // Per-role colormap-preset chip rows. Two parallel rows of chips, one
+  // per available colormap (plus 'Default' = legacy two-colour lerp). The
+  // top row writes Settings.cmapPreset/cmapReverse (drives GT / Raw /
+  // HOT3D obj-cloud / endpoints / legend). The bottom row writes
+  // Settings.cmapPresetPred/cmapReversePred (drives ONLY the Pred trail).
+  // _useColormapFor(role) routes the role to the right pair.
+  const _bindCmapRow = ({hostId, lblId, revBtnId, presetKey, reverseKey, roleLabel}) => {
+    const host = document.getElementById(hostId);
+    const lbl  = document.getElementById(lblId);
+    const refresh = () => {
+      if (!host) return;
+      host.querySelectorAll('.cmap-chip').forEach(c => {
+        c.classList.toggle('active', c.dataset.name === (Settings[presetKey] || 'twoColor'));
+      });
+      if (lbl) {
+        const name = Settings[presetKey] || 'twoColor';
+        lbl.textContent = (name === 'twoColor' ? 'two-colour' : name)
+          + (Settings[reverseKey] ? ' (reversed)' : '');
       }
-      const lbl = document.createElement('div');
-      lbl.className = 'cc-name';
-      lbl.textContent = label;
-      btn.appendChild(bar);
-      btn.appendChild(lbl);
-      btn.addEventListener('click', () => {
-        Settings.cmapPreset = name;
-        refreshCmapChips();
+    };
+    if (host) {
+      host.innerHTML = '';
+      const items = [['twoColor', 'Default']]
+        .concat(Object.keys(COLORMAP_LUTS).map(n => [n, n]));
+      for (const [name, label] of items) {
+        const btn = document.createElement('button');
+        btn.className = 'cmap-chip';
+        btn.dataset.name = name;
+        btn.title = label === 'Default'
+          ? `Two-colour lerp using the per-role colour pickers (legacy mode) — ${roleLabel}`
+          : `Apply ${label} colormap to ${roleLabel}`;
+        const bar = document.createElement('div');
+        bar.className = 'cc-bar';
+        if (name === 'twoColor') {
+          bar.style.background = 'linear-gradient(to right, #ffffff, #f0529c)';
+        } else {
+          // Sample the LUT directly (NOT via colormapRgb01) so the chip swatch
+          // always shows the canonical palette — the trail-brightness slider
+          // only affects rendered trails, never the picker itself.
+          const lut = COLORMAP_LUTS[name];
+          const stops = [0, 0.25, 0.5, 0.75, 1].map(t => {
+            const i = Math.round(t * 255) * 3;
+            return `rgb(${lut[i]},${lut[i+1]},${lut[i+2]}) ${(t*100).toFixed(0)}%`;
+          });
+          bar.style.background = `linear-gradient(to right, ${stops.join(', ')})`;
+        }
+        const lblEl = document.createElement('div');
+        lblEl.className = 'cc-name';
+        lblEl.textContent = label;
+        btn.appendChild(bar);
+        btn.appendChild(lblEl);
+        btn.addEventListener('click', () => {
+          Settings[presetKey] = name;
+          refresh();
+          buildTimeLegend();
+          rerenderAll();
+        });
+        host.appendChild(btn);
+      }
+    }
+    const revBtn = document.getElementById(revBtnId);
+    if (revBtn) {
+      revBtn.classList.toggle('on', !!Settings[reverseKey]);
+      revBtn.onclick = () => {
+        Settings[reverseKey] = !Settings[reverseKey];
+        revBtn.classList.toggle('on', Settings[reverseKey]);
+        refresh();
         buildTimeLegend();
         rerenderAll();
-      });
-      cmapChipHost.appendChild(btn);
+      };
     }
-  }
-  const cmapRevBtn = document.getElementById('cmap-rev');
-  if (cmapRevBtn) {
-    cmapRevBtn.classList.toggle('on', !!Settings.cmapReverse);
-    cmapRevBtn.onclick = () => {
-      Settings.cmapReverse = !Settings.cmapReverse;
-      cmapRevBtn.classList.toggle('on', Settings.cmapReverse);
-      refreshCmapChips();
-      buildTimeLegend();
-      rerenderAll();
-    };
-  }
-  refreshCmapChips();
+    refresh();
+  };
+  _bindCmapRow({hostId: 'cmap-chip-row',      lblId: 'cmap-current-lbl',      revBtnId: 'cmap-rev',      presetKey: 'cmapPreset',     reverseKey: 'cmapReverse',     roleLabel: 'GT / Raw / HOT3D obj-cloud'});
+  _bindCmapRow({hostId: 'cmap-chip-row-pred', lblId: 'cmap-current-lbl-pred', revBtnId: 'cmap-rev-pred', presetKey: 'cmapPresetPred', reverseKey: 'cmapReversePred', roleLabel: 'Pred trail'});
   // Trail-brightness slider — single global knob applied inside colormapRgb01.
   // < 1 lerps RGB toward white (faint), > 1 multiplies and clamps (boosted).
   // We don't gate this on cmapPreset !== 'twoColor' because the slider only
@@ -6815,9 +6840,12 @@ function applyPalette(name) {
   if (p.cmap) {
     Settings.cmapPreset = p.cmap;
     Settings.cmapReverse = false;
-    // Refresh the chip-row outline + legend so the UI reflects the change.
-    const chips = document.querySelectorAll('.cmap-chip');
-    chips.forEach(c => c.classList.toggle('active', c.dataset.name === Settings.cmapPreset));
+    // Refresh ONLY the GT chip-row outline + legend. Pred has its own row
+    // and its own preset key — leave it alone so a page-palette preset
+    // can't silently overwrite the user's per-role pred palette pick.
+    const gtRow = document.getElementById('cmap-chip-row');
+    gtRow?.querySelectorAll('.cmap-chip').forEach(c =>
+      c.classList.toggle('active', c.dataset.name === Settings.cmapPreset));
     document.getElementById('cmap-rev')?.classList.remove('on');
     const lbl = document.getElementById('cmap-current-lbl');
     if (lbl) lbl.textContent = (Settings.cmapPreset === 'twoColor' ? 'two-colour' : Settings.cmapPreset);
@@ -6864,8 +6892,11 @@ function _capturePreset() {
     const el = document.getElementById(id);
     if (el) out.toggles[id] = el.classList.contains('on');
   }
-  // Global colormap preset isn't a DOM input — store the live Settings keys.
-  out.cmap = { name: Settings.cmapPreset, reverse: !!Settings.cmapReverse };
+  // Per-role colormap preset isn't a DOM input — store the live Settings keys.
+  // Old presets only carry `cmap` (single global); newer presets also carry
+  // `cmapPred` for the Pred-only override. The loader below handles both.
+  out.cmap     = { name: Settings.cmapPreset,     reverse: !!Settings.cmapReverse };
+  out.cmapPred = { name: Settings.cmapPresetPred, reverse: !!Settings.cmapReversePred };
   return out;
 }
 function _applyPreset(p) {
@@ -6882,18 +6913,25 @@ function _applyPreset(p) {
     if (!el) continue;
     if (el.classList.contains('on') !== want) el.click();
   }
-  // Restore the global colormap preset (skipped silently for older saved
-  // presets that pre-date the chip row).
+  // Restore the per-role colormap presets (skipped silently for older saved
+  // presets that pre-date the chip rows).
   if (p.cmap && typeof p.cmap.name === 'string') {
     Settings.cmapPreset = p.cmap.name;
     Settings.cmapReverse = !!p.cmap.reverse;
-    document.querySelectorAll('.cmap-chip').forEach(c => {
+    document.getElementById('cmap-chip-row')?.querySelectorAll('.cmap-chip').forEach(c => {
       c.classList.toggle('active', c.dataset.name === Settings.cmapPreset);
     });
     document.getElementById('cmap-rev')?.classList.toggle('on', Settings.cmapReverse);
-    buildTimeLegend();
-    rerenderAll();
   }
+  if (p.cmapPred && typeof p.cmapPred.name === 'string') {
+    Settings.cmapPresetPred  = p.cmapPred.name;
+    Settings.cmapReversePred = !!p.cmapPred.reverse;
+    document.getElementById('cmap-chip-row-pred')?.querySelectorAll('.cmap-chip').forEach(c => {
+      c.classList.toggle('active', c.dataset.name === Settings.cmapPresetPred);
+    });
+    document.getElementById('cmap-rev-pred')?.classList.toggle('on', Settings.cmapReversePred);
+  }
+  if (p.cmap || p.cmapPred) { buildTimeLegend(); rerenderAll(); }
 }
 function bindPresets() {
   const sel = document.getElementById('preset-sel');
