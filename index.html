@@ -431,14 +431,14 @@ footer a { color: #2563eb; text-decoration: none; }
             <option value="static/data/PennPAL_c5f808b7_2023-10-30-00h-50m-14s_25455306_object_t67.json">PennPAL_c5f808b7_2023-10-30 · open/close · t67</option>
             <option value="static/data/CLVR_236539bc_2023-06-25-18h-35m-31s_20655732_object_t19.json">CLVR_236539bc_2023-06-25 · hang/unhang · t19</option>
             <option value="static/data/AUTOLab_84bd5053_2023-07-14-14h-56m-46s_24400334_object_t23.json">AUTOLab_84bd5053_2023-07-14 · stack · t23</option>
-            <option value="static/data/AUTOLab_0d4edc83_2023-10-21-19h-16m-18s_22008760.json">AUTOLab_0d4edc83_2023-10-21-19h-16 · open/close (raw)</option>
-            <option value="static/data/AUTOLab_0d4edc83_2023-10-21-19h-46m-27s_22008760.json">AUTOLab_0d4edc83_2023-10-21-19h-46 · open/close (raw)</option>
-            <option value="static/data/AUTOLab_0d4edc83_2023-10-21-20h-20m-00s_22008760.json">AUTOLab_0d4edc83_2023-10-21-20h-20 · open/close (raw)</option>
-            <option value="static/data/AUTOLab_0d4edc83_2023-11-03-15h-58m-46s_22008760.json">AUTOLab_0d4edc83_2023-11-03-15h-58 · move object (raw)</option>
-            <option value="static/data/AUTOLab_0d4edc83_2023-11-03-16h-52m-04s_22008760.json">AUTOLab_0d4edc83_2023-11-03-16h-52 · move object (raw)</option>
-            <option value="static/data/AUTOLab_44bb9c36_2023-11-23-19h-41m-33s_22008760_object_t20.json">AUTOLab_44bb9c36_2023-11-23 · clean/wipe · t20</option>
-            <option value="static/data/AUTOLab_5d05c5aa_2023-07-07-18h-52m-04s_22008760.json">AUTOLab_5d05c5aa_2023-07-07 · move object (raw)</option>
-            <option value="static/data/AUTOLab_5d05c5aa_2023-07-13-10h-59m-53s_24400334_object_t24.json">AUTOLab_5d05c5aa_2023-07-13 · put/place · t24</option>
+            <option value="static/data/AUTOLab_0d4edc83_2023-10-21-19h-16m-18s_22008760.json">AUTOLab_0d4edc83_2023-10-21-19h-16 · open/close</option>
+            <option value="static/data/AUTOLab_0d4edc83_2023-10-21-19h-46m-27s_22008760.json">AUTOLab_0d4edc83_2023-10-21-19h-46 · open/close</option>
+            <option value="static/data/AUTOLab_0d4edc83_2023-10-21-20h-20m-00s_22008760.json">AUTOLab_0d4edc83_2023-10-21-20h-20 · open/close</option>
+            <option value="static/data/AUTOLab_0d4edc83_2023-11-03-15h-58m-46s_22008760.json">AUTOLab_0d4edc83_2023-11-03-15h-58 · move object</option>
+            <option value="static/data/AUTOLab_0d4edc83_2023-11-03-16h-52m-04s_22008760.json">AUTOLab_0d4edc83_2023-11-03-16h-52 · move object</option>
+            <option value="static/data/AUTOLab_44bb9c36_2023-11-23-19h-41m-33s_22008760.json">AUTOLab_44bb9c36_2023-11-23 · clean/wipe</option>
+            <option value="static/data/AUTOLab_5d05c5aa_2023-07-07-18h-52m-04s_22008760.json">AUTOLab_5d05c5aa_2023-07-07 · move object</option>
+            <option value="static/data/AUTOLab_5d05c5aa_2023-07-13-10h-59m-53s_24400334.json">AUTOLab_5d05c5aa_2023-07-13 · put/place</option>
           </optgroup>
           <optgroup label="DAVIS">
             <option value="static/data/camel_camal_t2.json">camel_camal · t2</option>
@@ -1396,6 +1396,11 @@ const Settings = {
   cmapPreset:    'magma',
   cmapReverse:   false,
   cmapIntensity: 1.0,
+  // Hide GT in the 2D video / chrono overlays only (3D panels keep showing
+  // GT — independent of `t-gt`). Bundles can flip this via
+  // `viewer_defaults.show2DGt = false`. Default ON so existing bundles
+  // retain their look.
+  show2DGt:      true,
   // Per-role override for the Pred trail palette. When set to anything
   // other than null / undefined, _useColormapFor('pred') uses these instead
   // of the global cmapPreset / cmapReverse, letting the GT and Pred trails
@@ -4405,6 +4410,10 @@ function applyBundleViewerDefaults(clipData) {
     togglePanelLayer('showBalls', 't-balls', vd.showBalls);
   if (vd.showEndpoints !== undefined)
     togglePanelLayer('showEndpoints', 't-endpoints', vd.showEndpoints);
+  // Per-bundle hide-GT-in-2D-overlay flag. The 3D panels keep using the
+  // global `t-gt` toggle; this only affects drawVideoOverlay /
+  // drawChronoOverlay where the GT trail can clutter the prediction.
+  if (vd.show2DGt !== undefined) Settings.show2DGt = !!vd.show2DGt;
 
   // 2) Settings flags / numbers + matching DOM inputs.
   const setSlider = (id, lblId, v, fmt = (x) => x) => {
@@ -5743,7 +5752,7 @@ function drawVideoOverlay(fiFrac) {
   // rainbow mode is on.
   const T_clip = (cfg.gt_3d?.length || cfg.pred_3d?.length || 1);
   const Tdenom = Math.max(1, T_clip - 1);
-  if (cfg.gt_2d && lastFi >= 0) {
+  if (cfg.gt_2d && lastFi >= 0 && Settings.show2DGt) {
     const tS = 0, tE = lastFi / Tdenom;
     for (const p of idx) {
       const pts = collectPath(cfg.gt_2d, p, 0, lastFi, W, H);
@@ -5767,7 +5776,7 @@ function drawVideoOverlay(fiFrac) {
   const predRgb = _predCmap ? colormapRgb255(tCur, _predCmap.name, _predCmap.reverse) : TRAIL_RGB.pred;
   for (const p of idx) {
     const ptColor = pickHex(ptColors[p]);
-    if (cfg.gt_2d) {
+    if (cfg.gt_2d && Settings.show2DGt) {
       const pt = interp2d(cfg.gt_2d, fiFrac, p);
       if (pt && pt[0] >= 0 && pt[0] <= 1 && pt[1] >= 0 && pt[1] <= 1) {
         softDot(ctx, pt[0]*W, pt[1]*H, ptColor, 4.2);
@@ -5802,7 +5811,7 @@ function drawChronoOverlay() {
   // Chrono GT/Pred trails span the whole clip; tStart/tEnd reflect that.
   const T_clip2 = Math.max(cfg.gt_2d?.length || 0, cfg.pred_2d?.length || 0, 1);
   const Tdenom2 = Math.max(1, T_clip2 - 1);
-  if (cfg.gt_2d) {
+  if (cfg.gt_2d && Settings.show2DGt) {
     const fE = cfg.gt_2d.length - 1;
     const tE = fE / Tdenom2;
     for (const p of idx) {
@@ -5826,11 +5835,11 @@ function drawChronoOverlay() {
   const predEndRgb = _predCmap2 ? colormapRgb255(1.0, _predCmap2.name, _predCmap2.reverse) : TRAIL_RGB.pred;
   for (const p of idx) {
     const ptColor = pickHex(ptColors[p]);
-    if (cfg.gt_2d) {
+    if (cfg.gt_2d && Settings.show2DGt) {
       const s = cfg.gt_2d[0]?.[p];
       if (s && Number.isFinite(s[0]) && s[0]>=0 && s[0]<=1) softDot(ctx, s[0]*W, s[1]*H, ptColor, 3.4);
     }
-    if (cfg.gt_2d) {
+    if (cfg.gt_2d && Settings.show2DGt) {
       const e = cfg.gt_2d[cfg.gt_2d.length-1]?.[p];
       if (e && Number.isFinite(e[0]) && e[0]>=0 && e[0]<=1) {
         const x = e[0]*W, y = e[1]*H;

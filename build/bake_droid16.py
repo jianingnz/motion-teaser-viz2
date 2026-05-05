@@ -26,7 +26,7 @@ from pathlib import Path
 M5  = Path("/weka/prior-default/jianingz/home/visual/motion5-viz")
 M3  = Path("/weka/prior-default/chenhaoz/home/MotionPlanner/motion3-viz")
 M5_JSON_DIR = M5 / "static/data/modeling_json/droid/test"
-M3_JSON_DIR = M3 / "static/data/modeling_json/droid/2mix_droid_molmospaces_p8_h3_f8"
+M3_JSON_DIR = M3 / "static/data/modeling_json/droid/droid_v1_ft_f16"
 M5_VID_DIR  = M5 / "static/videos/modeling/droid"
 M3_VID_DIR  = M3 / "static/videos/modeling/droid"
 
@@ -50,10 +50,11 @@ CLIPS = [
     ("AUTOLab_0d4edc83_2023-10-21-20h-20m-00s_22008760",         M3_JSON_DIR, M3_VID_DIR, ""),
     ("AUTOLab_0d4edc83_2023-11-03-15h-58m-46s_22008760",         M3_JSON_DIR, M3_VID_DIR, ""),
     ("AUTOLab_0d4edc83_2023-11-03-16h-52m-04s_22008760",         M3_JSON_DIR, M3_VID_DIR, ""),
-    # substitutions for two no-t bases
-    ("AUTOLab_44bb9c36_2023-11-23-19h-41m-33s_22008760",         M5_JSON_DIR, M5_VID_DIR, "_object_t20"),
+    # bare-stem clips that were previously substituted with rollout5 t# variants;
+    # now sourced from the same droid_v1_ft_f16 config as the other six raw stems.
+    ("AUTOLab_44bb9c36_2023-11-23-19h-41m-33s_22008760",         M3_JSON_DIR, M3_VID_DIR, ""),
     ("AUTOLab_5d05c5aa_2023-07-07-18h-52m-04s_22008760",         M3_JSON_DIR, M3_VID_DIR, ""),
-    ("AUTOLab_5d05c5aa_2023-07-13-10h-59m-53s_24400334",         M5_JSON_DIR, M5_VID_DIR, "_object_t24"),
+    ("AUTOLab_5d05c5aa_2023-07-13-10h-59m-53s_24400334",         M3_JSON_DIR, M3_VID_DIR, ""),
 ]
 
 
