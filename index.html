@@ -5929,6 +5929,14 @@ function drawChronoOverlay() {
   // Chrono GT/Pred trails span the whole clip; tStart/tEnd reflect that.
   const T_clip2 = Math.max(cfg.gt_2d?.length || 0, cfg.pred_2d?.length || 0, 1);
   const Tdenom2 = Math.max(1, T_clip2 - 1);
+  // Optional per-clip chrono trail start frame (set in the bundle JSON's
+  // `chrono.trail_start_frame`). Used when the chrono background image is
+  // sampled from a non-zero frame and we want the trail (+ start markers)
+  // to begin there too. Affects the chrono panel only — drawVideoOverlay
+  // is not touched.
+  const cStart = clipData?.chrono?.trail_start_frame | 0;
+  const fS = (Number.isFinite(cStart) && cStart > 0) ? cStart : 0;
+  const tS = fS / Tdenom2;
   // Chrono uses the same Settings.video2D knobs as drawVideoOverlay so the
   // sidebar's "2D video overlay" sliders drive both panels. Width / dot
   // radius / alpha / dash → identical for both. The chrono trail spans the
@@ -5939,9 +5947,9 @@ function drawChronoOverlay() {
     const fE = cfg.gt_2d.length - 1;
     const tE = fE / Tdenom2;
     for (const p of idx) {
-      const pts = collectPath(cfg.gt_2d, p, 0, fE, W, H);
+      const pts = collectPath(cfg.gt_2d, p, fS, fE, W, H);
       strokeGradientPath(ctx, pts, TRAIL_RGB.gt, v2d.gtWidth ?? 1.5, null,
-                         'gt', 0, tE, v2d.gtAlpha ?? 1.0);
+                         'gt', tS, tE, v2d.gtAlpha ?? 1.0);
     }
   }
   if (cfg.pred_2d) {
@@ -5949,9 +5957,9 @@ function drawChronoOverlay() {
     const tE = fE / Tdenom2;
     const dash = (v2d.predDashOn === false) ? null : [4, 3];
     for (const p of idx) {
-      const pts = collectPath(cfg.pred_2d, p, 0, fE, W, H);
+      const pts = collectPath(cfg.pred_2d, p, fS, fE, W, H);
       strokeGradientPath(ctx, pts, TRAIL_RGB.pred, v2d.predWidth ?? 1.5, dash,
-                         'pred', 0, tE, v2d.predAlpha ?? 1.0);
+                         'pred', tS, tE, v2d.predAlpha ?? 1.0);
     }
   }
   // Endpoint markers — drawn last so they sit on top of the trails. Under
@@ -5963,7 +5971,7 @@ function drawChronoOverlay() {
   for (const p of idx) {
     const ptColor = pickHex(ptColors[p]);
     if (cfg.gt_2d && Settings.show2DGt) {
-      const s = cfg.gt_2d[0]?.[p];
+      const s = cfg.gt_2d[fS]?.[p];
       if (s && Number.isFinite(s[0]) && s[0]>=0 && s[0]<=1)
         softDot(ctx, s[0]*W, s[1]*H, ptColor, v2d.gtDotR ?? 4.2);
     }
