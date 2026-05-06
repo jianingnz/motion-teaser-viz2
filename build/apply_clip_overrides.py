@@ -12,12 +12,9 @@ Currently configured:
         prediction trail stops short of the end. The 3D pred and the GT
         remain untouched.
 
-  - AUTOLab_5d05c5aa_2023-07-07-18h-52m-04s_22008760
-        Move the chrono panel ② to start at frame 4: regenerate the
-        clip's `_chrono.jpg` from frame 4 of the served mp4, and set
-        `chrono.trail_start_frame = 4` in the JSON so drawChronoOverlay
-        starts the trail (+ start markers) at frame 4. The video panel
-        (panel ①) is unaffected — it keeps its frame-0 timeline.
+The viewer's drawChronoOverlay supports an optional `chrono.trail_start_frame`
+field (default 0); the helper `set_chrono_start_frame` is kept here for future
+use even though no clips currently set a non-zero start.
 """
 
 import json
@@ -94,13 +91,6 @@ def main():
     hide_pred_2d_tail(
         'REAL_de601749_2023-06-17-11h-34m-24s_20540549_object_t25',
         hide_last_n=6,
-    )
-
-    # AUTOLab 5d05c5aa (07-07 traj3d_v1 clip) — chrono panel opens at
-    # frame 4 so the predicted trail starts where the action does.
-    set_chrono_start_frame(
-        'AUTOLab_5d05c5aa_2023-07-07-18h-52m-04s_22008760',
-        frame_idx=4,
     )
 
     print('done.')
