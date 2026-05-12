@@ -247,6 +247,44 @@ Per-dataset specifics:
   In-place patches the JSON to add `clip_frames_hires` /
   `full_video_frames_hires` arrays.
 
+## Live chronophotography (panel ② — DROID)
+Activated by `viewer_defaults.chronoLive = true` in the bundle JSON
+(`tmp/tag_droid_chrono_live.py` stamps every DROID bundle on demand).
+
+Pipeline (in `index.html`, anchored under `// Live chronophotography
+build-up`):
+1. `convexHull2D(pts)` — Andrew's monotone-chain hull (~30 lines).
+2. `paintObjectStamp(dstCtx, frameCanvas, pts01, …, dilatePx, edgeBlurPx)`
+   builds a hull mask, dilates via `lineWidth = 2·dilatePx` round-joined
+   stroke, soft-edges via `ctx.filter = blur(N)`, then alpha-clips a copy
+   of the source frame and composites onto `dstCtx`. Mirrors
+   `prepare_clip_simple.build_object_stamps_chrono` semantics.
+3. `buildChronoLiveComposites()` — async, runs once after
+   `video.loadedmetadata`. Creates a hidden `<video>` at the same `mp4`
+   src, seeks frame by frame (`currentTime = fi / fps`, awaits `seeked`),
+   accumulates into a running canvas, and snapshots each step into
+   `ChronoLive.bitmaps[fi]` (ImageBitmap). On completion the static
+   `<img id="chrono-img">` is `visibility:hidden`-flipped, the overlay
+   canvases are resized to native clip res, and the GIF capture row is
+   revealed.
+4. `drawChronoLive(fi)` — single `drawImage(bitmaps[fi])` to
+   `<canvas id="chrono-live">`.
+5. `drawChronoOverlay(fiOpt, dstCtxOpt)` — accepts an optional fi to clip
+   GT/Pred trail end + suppress endpoint markers until fi reaches T-1;
+   `dstCtxOpt` redirects rendering to a private 2D context (used by the
+   GIF capture path).
+6. `captureChronoGif(onProgress)` — lazy-loads gif.js from cdnjs
+   (`https://cdnjs.cloudflare.com/ajax/libs/gif.js/0.2.0/{gif,gif.worker}.js`),
+   fetches the worker into a same-origin Blob URL (sidesteps cross-origin
+   Worker restrictions), iterates fi=0..T-1 compositing `bitmaps[fi]` +
+   the live overlay onto a merge canvas, `gif.addFrame(merge, {copy:true,
+   delay: 1000/fps})`, and resolves to a single Blob ready for download.
+
+`tick()` invokes `drawChronoLive(fiRel) + drawChronoOverlay(fiRel)` per
+integer-frame tick (`fiRel = fi − clipStartFrame`). `rerenderAll()` /
+`toggleRaw()` also route through these two calls in live mode so colour-
+picker / overlay tweaks repaint the chrono at the current playhead.
+
 ## Hi-res screenshot capture
 - `Panel.capture(scale)` (line ~2376) renders the panel into a backing
   buffer of `cssSize × scale`, returning a PNG `Blob`. Steps:

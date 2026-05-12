@@ -177,6 +177,24 @@ All produce: depth-backprojected scene PC (subsample=3 typical), per-frame
   Sidebar "Capture" section: panel selector + 1×/2×/4× (4K) / 8× (8K) scale +
   "All panels" mode that downloads one PNG per visible 3D panel.
 
+## Recent additions (2026-05-12)
+- **Live chronophotography (panel ②)** for DROID clips. The pre-baked static
+  `_chrono.jpg` is replaced at runtime by a per-frame cumulative composite:
+  `comp[0] = clip frame 0`, then for each subsequent frame fi we paint an
+  "object stamp" — convex hull of `cfg.gt_2d[fi]`'s visible points, dilated
+  by `chrono.dilate_px` (matches `build_object_stamps_chrono` semantics) and
+  alpha-masked into the cumulative canvas — onto `comp[fi-1]`. Composites
+  are pre-rendered into ImageBitmaps once at boot (hidden `<video>` +
+  seek-and-drawImage loop). The chrono 2D-track overlay (`drawChronoOverlay`)
+  also grows to the playhead in live mode, and endpoint markers appear only
+  once the playhead reaches the final frame. Sidebar gains a `🎞️ Capture
+  chrono GIF` button that re-renders every fi onto a native-resolution
+  canvas (composite + same overlay code) and encodes a looping GIF via
+  `gif.js` (workers=4, quality=1, FloydSteinberg dither, repeat=0, delay =
+  1000 / clip-fps). Native res, no resize, 15 fps for DROID. Bundles opt in
+  via `viewer_defaults.chronoLive = true` (all 16 DROID JSONs tagged by
+  `tmp/tag_droid_chrono_live.py`; other datasets keep the static path).
+
 ## Status
 Bundles deployed. Live demo on GitHub Pages. Ongoing tuning: paper-figure
 knobs, HOT3D spatial picks, ghost-frame composition.

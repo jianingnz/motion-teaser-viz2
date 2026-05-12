@@ -495,9 +495,10 @@ footer a { color: #2563eb; text-decoration: none; }
       <div class="body raw-strip-body" id="full-raw-strip"></div>
     </div>
     <div class="card chrono-card">
-      <div class="ttl"><span>② Chronophotography (motion ghost) + 2D tracks</span><span class="lg-tag">all frames composited</span></div>
+      <div class="ttl"><span>② Chronophotography (motion ghost) + 2D tracks</span><span class="lg-tag" id="chrono-tag">all frames composited</span></div>
       <div class="body">
         <img id="chrono-img" alt="chronophoto">
+        <canvas class="over" id="chrono-live"></canvas>
         <canvas class="over" id="chrono-overlay"></canvas>
       </div>
     </div>
@@ -1281,6 +1282,17 @@ footer a { color: #2563eb; text-decoration: none; }
           Output: single-page PDF, page size = panel CSS box × scale (in pixels).
           Camera + lighting + colormap state captured exactly as drawn.
         </div>
+        <!-- Panel ② live-chrono GIF capture. Hidden unless the loaded bundle
+             turns chronoLive on (DROID bundles do by default — see
+             tmp/tag_droid_chrono_live.py). Records the cumulative
+             chrono build-up + growing 2D track overlay at the clip's
+             native chrono image resolution, fps = clip fps. -->
+        <div class="toggle-grid" id="chrono-gif-row" style="margin-top:10px;display:none;">
+          <button class="btn full" id="chrono-gif-go" title="Render panel ② frame-by-frame at native resolution and download a looping GIF.">🎞️ Capture chrono GIF</button>
+        </div>
+        <div id="chrono-gif-prog" style="margin-top:6px;font-size:.7rem;color:var(--text-muted);font-family:monospace;display:none;">
+          (idle)
+        </div>
       </div>
     </details>
 
@@ -1448,6 +1460,14 @@ const Settings = {
   // `viewer_defaults.show2DGt = false`. Default ON so existing bundles
   // retain their look.
   show2DGt:      true,
+  // Panel ② live-chrono mode. When true, the static `chrono.image_url`
+  // composite is hidden and replaced by a canvas that builds up the
+  // chronophotography cumulatively over the clip: each playhead frame fi
+  // shows the min-blend of source-clip frames [0..fi]. Track overlay
+  // (drawChronoOverlay) also grows up to fi instead of spanning the whole
+  // clip. Enables a "Capture chrono GIF" button in the Capture sidebar
+  // section. DROID bundles flip this on via viewer_defaults.chronoLive.
+  chronoLive:    false,
   // Per-role knobs for the 2D video overlay (panel ①). Colours come from
   // the global `col-gt` / `col-pred` pickers via `TRAIL_RGB` so they stay
   // in sync with the 3D trails. Widths / dot radii / alphas are
@@ -4182,6 +4202,13 @@ class Panel {
 let panels = [];
 let clipData = null, cfg = null;
 let video, vidOver, vidOverCtx, chronoOver, chronoOverCtx;
+// Live-chrono state (panel ②). Populated by buildChronoLiveComposites() when
+// viewer_defaults.chronoLive=true. _bitmaps[i] holds the min-blend composite
+// of source clip frames [0..i] as an ImageBitmap (created once at init); the
+// per-tick drawChronoLive(fi) call blits the appropriate one to chrono-live.
+// Native (clip-video) resolution — paper-quality is preserved end-to-end.
+let chronoLive, chronoLiveCtx;
+const ChronoLive = { bitmaps: null, W: 0, H: 0, T: 0, ready: false };
 
 // Tiny debug hook: expose the module-scope state on `window.__MTV` so
 // browser devtools / smoke tests / preset-introspection can read the live
@@ -4478,6 +4505,7 @@ function applyBundleViewerDefaults(clipData) {
   // global `t-gt` toggle; this only affects drawVideoOverlay /
   // drawChronoOverlay where the GT trail can clutter the prediction.
   if (vd.show2DGt !== undefined) Settings.show2DGt = !!vd.show2DGt;
+  if (vd.chronoLive !== undefined) Settings.chronoLive = !!vd.chronoLive;
 
   // 2) Settings flags / numbers + matching DOM inputs.
   const setSlider = (id, lblId, v, fmt = (x) => x) => {
@@ -4821,10 +4849,17 @@ async function init() {
   chronoImg.src = clipData.chrono.image_url;
   chronoOver = document.getElementById('chrono-overlay');
   chronoOverCtx = chronoOver.getContext('2d');
+  chronoLive = document.getElementById('chrono-live');
+  chronoLiveCtx = chronoLive.getContext('2d');
   chronoImg.addEventListener('load', () => {
-    chronoOver.width = chronoImg.naturalWidth;
-    chronoOver.height = chronoImg.naturalHeight;
-    drawChronoOverlay();
+    // Static fallback path. Live mode will resize both overlays to the
+    // clip-video native resolution once buildChronoLiveComposites finishes
+    // — see the call below loadedmetadata.
+    if (!Settings.chronoLive) {
+      chronoOver.width = chronoImg.naturalWidth;
+      chronoOver.height = chronoImg.naturalHeight;
+      drawChronoOverlay();
+    }
   });
 
   panels = [
@@ -4894,6 +4929,16 @@ async function init() {
     tick();
     // Populate the raw-RGB strip panel with sampled frames from the mp4.
     buildRawThumbs(10).catch(err => console.warn('raw-thumbs failed:', err));
+    // Pre-compute the live-chrono cumulative composites (DROID bundles
+    // turn this on via viewer_defaults.chronoLive). Fail-soft: if the
+    // build throws (404 mp4, decode error), the static chrono.jpg path
+    // remains visible.
+    if (Settings.chronoLive) {
+      buildChronoLiveComposites().catch(err => {
+        console.warn('chrono-live build failed:', err);
+        Settings.chronoLive = false;
+      });
+    }
     // Prediction-frames strip (panel ⑥b). Bundles that ship a
     // `pred_video_frames_hires` block (currently HOT3D clip-003020 with the
     // DAS prediction output) reveal this panel; everyone else hides it.
@@ -4940,6 +4985,15 @@ async function init() {
           p.updateDynamic(cfg, fi); p.render();
         });
         drawVideoOverlay(fi);
+        // Live chrono build-up (panel ②). `fi` here is the source-video
+        // frame; after remap that's identical to the config-fi for DROID
+        // (no history offset). Both calls are cheap (single drawImage +
+        // 2D canvas lines), so they run every integer-frame tick.
+        if (Settings.chronoLive && ChronoLive.ready) {
+          const fiRel = fi - App.clipStartFrame;
+          drawChronoLive(fiRel);
+          drawChronoOverlay(fiRel);
+        }
       }
     }
     requestAnimationFrame(tick);
@@ -5909,24 +5963,31 @@ function drawVideoOverlay(fiFrac) {
   }
 }
 
-// ──────────── Chronophotography overlay (static, full sequence) ────────────
-function drawChronoOverlay() {
-  if (!chronoOver.width) return;
-  const W = chronoOver.width, H = chronoOver.height;
-  const ctx = chronoOverCtx;
+// ──────────── Chronophotography overlay ────────────
+// Two modes:
+//   • static (default): full-clip trails, end markers at the last frame.
+//     The chrono background is the pre-baked _chrono.jpg.
+//   • live (Settings.chronoLive=true and `fiOpt` supplied): trails grow
+//     from frame 0 to `fiOpt`, the GT/Pred end markers appear only once
+//     `fiOpt` reaches the last frame. The chrono background is a
+//     cumulatively built canvas (see buildChronoLiveComposites). Use
+//     `null` / undefined `fiOpt` in live mode to redraw at the last frame
+//     (sidebar resyncs after a colour-picker change, etc.).
+function drawChronoOverlay(fiOpt, dstCtxOpt) {
+  // dstCtxOpt: optional alternate 2D context to draw into. Used by the
+  // GIF capture path to redirect overlay rendering to a private merge
+  // canvas without touching the on-screen chrono-overlay. Width/height
+  // come from the destination canvas itself, so any size works.
+  const ctx = dstCtxOpt || chronoOverCtx;
+  if (!ctx) return;
+  const targetCanvas = ctx.canvas;
+  const W = targetCanvas.width, H = targetCanvas.height;
+  if (!W || !H) return;
   ctx.clearRect(0, 0, W, H);
 
   const idx = cfg._goodIdx || [];
   const ptColors = cfg.pt_colors_rgb || [];
 
-  // Raw tracks first (no smoothing, no filter) — full clip range here since
-  // the chrono image already composites all frames into one image.
-  if (App.showRaw && clipData.raw_2d && clipData._rawIdx) {
-    drawRaw2D(ctx, clipData.raw_2d, clipData._rawIdx,
-              0, clipData.raw_2d.length - 1, W, H);
-  }
-
-  // Chrono GT/Pred trails span the whole clip; tStart/tEnd reflect that.
   const T_clip2 = Math.max(cfg.gt_2d?.length || 0, cfg.pred_2d?.length || 0, 1);
   const Tdenom2 = Math.max(1, T_clip2 - 1);
   // Optional per-clip chrono trail start frame (set in the bundle JSON's
@@ -5937,33 +5998,52 @@ function drawChronoOverlay() {
   const cStart = clipData?.chrono?.trail_start_frame | 0;
   const fS = (Number.isFinite(cStart) && cStart > 0) ? cStart : 0;
   const tS = fS / Tdenom2;
-  // Chrono uses the same Settings.video2D knobs as drawVideoOverlay so the
-  // sidebar's "2D video overlay" sliders drive both panels. Width / dot
-  // radius / alpha / dash → identical for both. The chrono trail spans the
-  // entire clip (vs. the video's growing-up-to-playhead window) so a
-  // single still image still communicates the full motion.
+  // Live-mode clip end: trails extend to `fiOpt`, never past the array.
+  // Static mode keeps the previous "all frames" behavior.
+  const liveMode = Settings.chronoLive && Number.isFinite(fiOpt);
+  const liveFi = liveMode ? Math.max(fS, Math.min(T_clip2 - 1, fiOpt | 0)) : (T_clip2 - 1);
+  const atEnd = !liveMode || liveFi >= (T_clip2 - 1);
+
+  // Raw tracks first (no smoothing, no filter). Static mode uses the full
+  // clip range; live mode grows up to liveFi.
+  if (App.showRaw && clipData.raw_2d && clipData._rawIdx) {
+    const rawEnd = liveMode
+      ? Math.min(clipData.raw_2d.length - 1, liveFi)
+      : (clipData.raw_2d.length - 1);
+    if (rawEnd >= 0) {
+      drawRaw2D(ctx, clipData.raw_2d, clipData._rawIdx, 0, rawEnd, W, H);
+    }
+  }
+
   const v2d = Settings.video2D || {};
   if (cfg.gt_2d && Settings.show2DGt) {
-    const fE = cfg.gt_2d.length - 1;
+    const fE = Math.min(cfg.gt_2d.length - 1, liveFi);
     const tE = fE / Tdenom2;
-    for (const p of idx) {
-      const pts = collectPath(cfg.gt_2d, p, fS, fE, W, H);
-      strokeGradientPath(ctx, pts, TRAIL_RGB.gt, v2d.gtWidth ?? 1.5, null,
-                         'gt', tS, tE, v2d.gtAlpha ?? 1.0);
+    if (fE > fS) {
+      for (const p of idx) {
+        const pts = collectPath(cfg.gt_2d, p, fS, fE, W, H);
+        strokeGradientPath(ctx, pts, TRAIL_RGB.gt, v2d.gtWidth ?? 1.5, null,
+                           'gt', tS, tE, v2d.gtAlpha ?? 1.0);
+      }
     }
   }
   if (cfg.pred_2d) {
-    const fE = cfg.pred_2d.length - 1;
+    const fE = Math.min(cfg.pred_2d.length - 1, liveFi);
     const tE = fE / Tdenom2;
     const dash = (v2d.predDashOn === false) ? null : [4, 3];
-    for (const p of idx) {
-      const pts = collectPath(cfg.pred_2d, p, fS, fE, W, H);
-      strokeGradientPath(ctx, pts, TRAIL_RGB.pred, v2d.predWidth ?? 1.5, dash,
-                         'pred', tS, tE, v2d.predAlpha ?? 1.0);
+    if (fE > fS) {
+      for (const p of idx) {
+        const pts = collectPath(cfg.pred_2d, p, fS, fE, W, H);
+        strokeGradientPath(ctx, pts, TRAIL_RGB.pred, v2d.predWidth ?? 1.5, dash,
+                           'pred', tS, tE, v2d.predAlpha ?? 1.0);
+      }
     }
   }
   // Endpoint markers — drawn last so they sit on top of the trails. Under
-  // colormap mode the end ring picks up the colormap colour at t=1.
+  // colormap mode the end ring picks up the colormap colour at t=1. In live
+  // mode the end marker only appears once the playhead reaches the last
+  // frame (otherwise it would sit at the eventual stopping point before the
+  // trail has reached it, which reads as a stray ring).
   const _gtCmap   = _useColormapFor('gt');
   const _predCmap2 = _useColormapFor('pred');
   const gtEndRgb   = _gtCmap   ? colormapRgb255(1.0, _gtCmap.name,   _gtCmap.reverse)   : TRAIL_RGB.gt;
@@ -5975,7 +6055,7 @@ function drawChronoOverlay() {
       if (s && Number.isFinite(s[0]) && s[0]>=0 && s[0]<=1)
         softDot(ctx, s[0]*W, s[1]*H, ptColor, v2d.gtDotR ?? 4.2);
     }
-    if (cfg.gt_2d && Settings.show2DGt) {
+    if (atEnd && cfg.gt_2d && Settings.show2DGt) {
       const e = cfg.gt_2d[cfg.gt_2d.length-1]?.[p];
       if (e && Number.isFinite(e[0]) && e[0]>=0 && e[0]<=1) {
         const x = e[0]*W, y = e[1]*H;
@@ -5985,7 +6065,7 @@ function drawChronoOverlay() {
         ctx.beginPath(); ctx.arc(x, y, (v2d.predDotR ?? 5.0) + 0.2, 0, Math.PI*2); ctx.stroke();
       }
     }
-    if (cfg.pred_2d) {
+    if (atEnd && cfg.pred_2d) {
       const e = cfg.pred_2d[cfg.pred_2d.length-1]?.[p];
       if (e && Number.isFinite(e[0]) && e[0]>=0 && e[0]<=1) {
         ringDot(ctx, e[0]*W, e[1]*H,
@@ -5995,6 +6075,266 @@ function drawChronoOverlay() {
       }
     }
   }
+}
+
+// ─────────────── Live chronophotography build-up (panel ②) ───────────────
+// When viewer_defaults.chronoLive=true (DROID bundles, by default), the
+// static pre-baked chrono.jpg is replaced by a per-frame cumulative
+// composite that mirrors prepare_clip_simple.build_object_stamps_chrono:
+//   comp[0] = source clip frame 0
+//   comp[i] = composite(comp[i-1], frame_i masked by convex_hull(gt_2d[i]))
+// The mask is dilated by ~`chrono.dilate_px` (defaults to 14 px in the
+// build pipeline) and softened at the edges. ImageBitmaps are precomputed
+// once at init, then drawChronoLive(fi) just blits the matching bitmap.
+
+// Andrew's monotone-chain convex hull, returns the lower→upper hull as
+// [[x,y], …]. Pure 2D, O(n log n). Caller filters NaNs / out-of-image pts.
+function convexHull2D(pts) {
+  if (pts.length < 3) return pts.slice();
+  const ps = pts.slice().sort((a, b) => a[0] === b[0] ? a[1] - b[1] : a[0] - b[0]);
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lo = [];
+  for (const p of ps) {
+    while (lo.length >= 2 && cross(lo[lo.length - 2], lo[lo.length - 1], p) <= 0) lo.pop();
+    lo.push(p);
+  }
+  const up = [];
+  for (let i = ps.length - 1; i >= 0; i--) {
+    const p = ps[i];
+    while (up.length >= 2 && cross(up[up.length - 2], up[up.length - 1], p) <= 0) up.pop();
+    up.push(p);
+  }
+  lo.pop(); up.pop();
+  return lo.concat(up);
+}
+
+// Paint an "object stamp": for the convex hull of the visible GT 2D points
+// at frame `fi`, dilate by `dilatePx` (stroke ≈ cv2.dilate ellipse kernel),
+// soften edges, then composite that slice of `frameCanvas` onto `dstCtx`.
+function paintObjectStamp(dstCtx, frameCanvas, pts01, W, H, dilatePx, edgeBlurPx) {
+  const px = [];
+  for (const p of (pts01 || [])) {
+    if (!p || !Number.isFinite(p[0])) continue;
+    if (p[0] < 0 || p[0] > 1 || p[1] < 0 || p[1] > 1) continue;
+    px.push([p[0] * (W - 1), p[1] * (H - 1)]);
+  }
+  if (px.length < 3) return false;
+  const hull = convexHull2D(px);
+  if (hull.length < 3) return false;
+  // Build the dilated, softened mask on a scratch canvas.
+  const mask = document.createElement('canvas');
+  mask.width = W; mask.height = H;
+  const mctx = mask.getContext('2d');
+  mctx.fillStyle = '#ffffff';
+  mctx.strokeStyle = '#ffffff';
+  mctx.lineJoin = 'round';
+  mctx.lineCap = 'round';
+  mctx.lineWidth = Math.max(1, dilatePx * 2);
+  mctx.beginPath();
+  mctx.moveTo(hull[0][0], hull[0][1]);
+  for (let i = 1; i < hull.length; i++) mctx.lineTo(hull[i][0], hull[i][1]);
+  mctx.closePath();
+  mctx.fill();
+  mctx.stroke();
+  if (edgeBlurPx > 0 && 'filter' in CanvasRenderingContext2D.prototype) {
+    // Re-blit the mask through a blur filter so the edge softens before
+    // being used as an alpha mask. canvas filter is widely supported in
+    // modern browsers — Chrome 88+, Firefox 90+, Safari 17+. Fail-soft:
+    // if the filter is ignored the result is a hard-edged stamp, which is
+    // still visually fine.
+    const blurred = document.createElement('canvas');
+    blurred.width = W; blurred.height = H;
+    const bctx = blurred.getContext('2d');
+    bctx.filter = `blur(${edgeBlurPx | 0}px)`;
+    bctx.drawImage(mask, 0, 0);
+    mctx.clearRect(0, 0, W, H);
+    mctx.drawImage(blurred, 0, 0);
+  }
+  // Apply the alpha mask to a copy of the source frame and stamp it onto
+  // the destination composite. destination-in keeps only the masked region;
+  // a fresh canvas avoids mutating the input frameCanvas.
+  const tmp = document.createElement('canvas');
+  tmp.width = W; tmp.height = H;
+  const tctx = tmp.getContext('2d');
+  tctx.drawImage(frameCanvas, 0, 0, W, H);
+  tctx.globalCompositeOperation = 'destination-in';
+  tctx.drawImage(mask, 0, 0);
+  tctx.globalCompositeOperation = 'source-over';
+  dstCtx.drawImage(tmp, 0, 0);
+  return true;
+}
+
+// Builds ChronoLive.bitmaps[i] = cumulative-stamped composite of the clip up
+// to frame i, at native clip-video resolution. Runs once per page load when
+// Settings.chronoLive is true. Seeks a hidden <video> through every frame
+// — DROID clips are short (~21–33 frames) so total time is well under a
+// second on modern hardware.
+async function buildChronoLiveComposites() {
+  if (!Settings.chronoLive) return;
+  const stem = clipData?.camera?.video_stem
+            || CLIP_URL.split('/').pop().replace(/\.json$/, '');
+  // Probe both stem candidates: prefer the path the main player resolved.
+  const candidate = (video?.src && video.src.endsWith('.mp4')) ? video.src : `static/videos/${stem}.mp4`;
+  const v = document.createElement('video');
+  v.src = candidate;
+  v.muted = true; v.preload = 'auto'; v.crossOrigin = 'anonymous';
+  v.style.display = 'none';
+  document.body.appendChild(v);
+  try {
+    await new Promise((res, rej) => {
+      v.addEventListener('loadedmetadata', res, { once: true });
+      v.addEventListener('error', () => rej(new Error('chrono-live: video load failed')), { once: true });
+    });
+    const W = v.videoWidth, H = v.videoHeight;
+    const T = clipData.num_frames || 1;
+    const fps = +(clipData.fps || 15);
+    const dilatePx = (clipData?.chrono?.dilate_px) | 0 || 14;
+    const edgeBlur = 7;
+    // Running composite (mutated in-place across frames) + per-frame
+    // ImageBitmaps for cheap blitting later.
+    const work = document.createElement('canvas');
+    work.width = W; work.height = H;
+    const wctx = work.getContext('2d');
+    const frameC = document.createElement('canvas');
+    frameC.width = W; frameC.height = H;
+    const fctx = frameC.getContext('2d');
+    const bitmaps = new Array(T);
+    for (let fi = 0; fi < T; fi++) {
+      await new Promise(res => {
+        const onSeeked = () => { v.removeEventListener('seeked', onSeeked); res(); };
+        v.addEventListener('seeked', onSeeked);
+        v.currentTime = fi / fps;
+      });
+      fctx.drawImage(v, 0, 0, W, H);
+      if (fi === 0) {
+        wctx.drawImage(frameC, 0, 0);
+      } else {
+        const pts = cfg.gt_2d?.[fi] || [];
+        const ok = paintObjectStamp(wctx, frameC, pts, W, H, dilatePx, edgeBlur);
+        // If the convex hull was degenerate (e.g. <3 visible points), fall
+        // back to stamping the whole frame so the build-up still progresses
+        // visibly. This mirrors prepare_clip_simple's behaviour of just
+        // skipping the stamp — but for the LIVE animation an unchanging
+        // frame would look broken, so we drop the alpha-masking and overlay
+        // the raw frame at low opacity instead.
+        if (!ok) {
+          wctx.save();
+          wctx.globalAlpha = 0.20;
+          wctx.drawImage(frameC, 0, 0);
+          wctx.restore();
+        }
+      }
+      bitmaps[fi] = await createImageBitmap(work);
+    }
+    ChronoLive.bitmaps = bitmaps;
+    ChronoLive.W = W; ChronoLive.H = H; ChronoLive.T = T;
+    ChronoLive.ready = true;
+    // Resize both overlays to the native resolution and hide the static
+    // chrono image. Visibility (not display) preserves layout — the canvas
+    // overlays are absolutely positioned inside the .body box.
+    chronoLive.width = W; chronoLive.height = H;
+    chronoOver.width = W; chronoOver.height = H;
+    const chronoImg = document.getElementById('chrono-img');
+    if (chronoImg) chronoImg.style.visibility = 'hidden';
+    const tag = document.getElementById('chrono-tag');
+    if (tag) tag.textContent = `live build-up · ${T} frames @ ${fps} fps`;
+    const gifRow = document.getElementById('chrono-gif-row');
+    if (gifRow) gifRow.style.display = '';
+    drawChronoLive(App._lastFi >= 0 ? (App._lastFi - (App.clipStartFrame | 0)) : 0);
+    drawChronoOverlay(App._lastFi >= 0 ? (App._lastFi - (App.clipStartFrame | 0)) : 0);
+  } finally {
+    v.remove();
+  }
+}
+
+// Blit the cumulative composite for frame `fi` to the panel-② live canvas.
+// Cheap — single drawImage from a pre-rendered ImageBitmap.
+function drawChronoLive(fi) {
+  if (!ChronoLive.ready || !chronoLiveCtx) return;
+  const W = ChronoLive.W, H = ChronoLive.H;
+  const i = Math.max(0, Math.min(ChronoLive.T - 1, fi | 0));
+  chronoLiveCtx.clearRect(0, 0, W, H);
+  const bm = ChronoLive.bitmaps[i];
+  if (bm) chronoLiveCtx.drawImage(bm, 0, 0, W, H);
+}
+
+// Lazy-load gif.js (CDN, same versioned URL pair). Cached on
+// window.GIF after first load. The worker script is fetched and wrapped
+// in a same-origin Blob URL so the Worker constructor doesn't trip over
+// cross-origin restrictions on certain browsers / WebView setups.
+const GIF_JS_URL     = 'https://cdnjs.cloudflare.com/ajax/libs/gif.js/0.2.0/gif.js';
+const GIF_WORKER_URL = 'https://cdnjs.cloudflare.com/ajax/libs/gif.js/0.2.0/gif.worker.js';
+async function _loadGifJs() {
+  if (typeof window.GIF === 'undefined') {
+    await new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = GIF_JS_URL;
+      s.onload = () => res();
+      s.onerror = () => rej(new Error('failed to load gif.js from CDN'));
+      document.head.appendChild(s);
+    });
+  }
+  if (!window._gifWorkerBlobUrl) {
+    const r = await fetch(GIF_WORKER_URL);
+    if (!r.ok) throw new Error(`failed to fetch gif.worker.js: HTTP ${r.status}`);
+    const blob = new Blob([await r.text()], { type: 'application/javascript' });
+    window._gifWorkerBlobUrl = URL.createObjectURL(blob);
+  }
+}
+
+// Encode the panel-② live chrono build-up to a looping GIF at native
+// clip-video resolution, fps = clip fps, infinite repeat. Each frame is
+// rendered onto a merge canvas: cumulative-stamp composite + the same
+// drawChronoOverlay() trail/dot logic the on-screen panel uses. gif.js
+// (quality=1, FloydSteinberg dither) is the most-compatible encoder
+// available without adding a build step.
+async function captureChronoGif(onProgress) {
+  if (!ChronoLive.ready) throw new Error('chrono-live not ready');
+  await _loadGifJs();
+  const W = ChronoLive.W, H = ChronoLive.H, T = ChronoLive.T;
+  const fps = +(clipData.fps || 15);
+  // gif.js delays are in ms. 15 fps → 67 ms; below ~20 ms most viewers
+  // clamp anyway, so we floor there.
+  const delay = Math.max(20, Math.round(1000 / fps));
+  const gif = new window.GIF({
+    workers: 4,
+    quality: 1,                 // 1 = best (slowest); higher = faster, more banding
+    width: W, height: H,
+    workerScript: window._gifWorkerBlobUrl,
+    repeat: 0,                  // 0 = loop forever
+    dither: 'FloydSteinberg',
+  });
+  const merge = document.createElement('canvas');
+  merge.width = W; merge.height = H;
+  const mctx = merge.getContext('2d');
+  // Private overlay canvas so drawChronoOverlay() can render at the GIF's
+  // native resolution without touching the on-screen <canvas>.
+  const overC = document.createElement('canvas');
+  overC.width = W; overC.height = H;
+  const overCtx = overC.getContext('2d');
+  const wasPaused = video?.paused !== false;
+  if (video && !wasPaused) video.pause();
+  for (let fi = 0; fi < T; fi++) {
+    mctx.clearRect(0, 0, W, H);
+    const bm = ChronoLive.bitmaps[fi];
+    if (bm) mctx.drawImage(bm, 0, 0, W, H);
+    drawChronoOverlay(fi, overCtx);
+    mctx.drawImage(overC, 0, 0);
+    gif.addFrame(merge, { copy: true, delay });
+    if (onProgress) onProgress({ stage: 'frames', i: fi + 1, n: T });
+    // Yield to the event loop so the progress label can repaint.
+    await new Promise(res => setTimeout(res, 0));
+  }
+  const blob = await new Promise((res, rej) => {
+    gif.on('finished', res);
+    gif.on('abort', () => rej(new Error('gif encode aborted')));
+    gif.on('progress', (p) => {
+      if (onProgress) onProgress({ stage: 'encode', p });
+    });
+    gif.render();
+  });
+  if (video && !wasPaused) video.play();
+  return blob;
 }
 
 // ──────────── Controls ────────────
@@ -6603,6 +6943,49 @@ function bindControls() {
     pdf.addImage(dataUrl, 'PNG', 0, 0, width, height, undefined, 'FAST');
     pdf.save(fileName);
   };
+  // Panel ② live-chrono GIF capture. The row is only revealed once
+  // buildChronoLiveComposites finishes (it sets display:''), so checking
+  // ChronoLive.ready here is purely defensive.
+  const chronoGifGo = document.getElementById('chrono-gif-go');
+  const chronoGifProg = document.getElementById('chrono-gif-prog');
+  if (chronoGifGo) {
+    chronoGifGo.onclick = async () => {
+      if (!ChronoLive.ready) {
+        alert('Chrono-live composites not ready yet — wait a moment and retry.');
+        return;
+      }
+      const orig = chronoGifGo.textContent;
+      chronoGifGo.textContent = '🎞️ Capturing…';
+      chronoGifGo.disabled = true;
+      if (chronoGifProg) { chronoGifProg.style.display = ''; chronoGifProg.textContent = 'starting…'; }
+      try {
+        const blob = await captureChronoGif((info) => {
+          if (!chronoGifProg) return;
+          if (info.stage === 'frames') {
+            chronoGifProg.textContent = `compositing ${info.i}/${info.n}`;
+          } else if (info.stage === 'encode') {
+            chronoGifProg.textContent = `encoding ${(info.p * 100).toFixed(0)}%`;
+          }
+        });
+        const url = URL.createObjectURL(blob);
+        const stem = (CLIP_URL.split('/').pop() || 'clip').replace(/\.json$/, '');
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${stem}_chrono.gif`;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 30000);
+        if (chronoGifProg) chronoGifProg.textContent = `saved ${stem}_chrono.gif (${(blob.size/1024).toFixed(0)} KB)`;
+      } catch (err) {
+        console.error('chrono GIF capture failed:', err);
+        if (chronoGifProg) chronoGifProg.textContent = `error: ${err?.message || err}`;
+        alert('Chrono GIF capture failed: ' + (err?.message || err));
+      } finally {
+        chronoGifGo.textContent = orig;
+        chronoGifGo.disabled = false;
+      }
+    };
+  }
+
   const capGo = document.getElementById('cap-go');
   if (capGo) {
     capGo.onclick = async () => {
@@ -6736,7 +7119,16 @@ function rerenderAll() {
     p.applyCamera(); p.render();
   }
   if (App?._lastFi >= 0) drawVideoOverlay(App._lastFi);
-  drawChronoOverlay();
+  // In live-chrono mode pass the current frame so the trail length tracks
+  // the playhead after a sidebar tweak. Static mode passes undefined and
+  // gets the full-clip trail.
+  if (Settings.chronoLive && ChronoLive.ready && App?._lastFi >= 0) {
+    const fiRel = App._lastFi - (App.clipStartFrame | 0);
+    drawChronoLive(fiRel);
+    drawChronoOverlay(fiRel);
+  } else {
+    drawChronoOverlay();
+  }
 }
 
 // Heavier than rerenderAll: also re-runs buildStatic on every panel so any
@@ -7503,7 +7895,13 @@ function toggleRaw(ev) {
     p.render();
   }
   drawVideoOverlay(App._lastFi >= 0 ? App._lastFi : 0);
-  drawChronoOverlay();
+  if (Settings.chronoLive && ChronoLive.ready && App._lastFi >= 0) {
+    const fiRel = App._lastFi - (App.clipStartFrame | 0);
+    drawChronoLive(fiRel);
+    drawChronoOverlay(fiRel);
+  } else {
+    drawChronoOverlay();
+  }
 }
 
 init().catch(e => {
